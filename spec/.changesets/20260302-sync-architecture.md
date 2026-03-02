@@ -49,14 +49,14 @@ Tracks the SHA-256 hash of every file's content at the time of last sync. Stored
 ```json
 {
   "hello.md": { "hash": "sha256-abc..." },
-  "image.png": { "hash": "sha256-def...", "modified": "2026-03-01T12:00:00Z" }
+  "image.png": { "hash": "sha256-def...", "modified": 1709290800000 }
 }
 ```
 
 ```ts
 type SnapshotEntry =
   | { hash: string }                              // text file
-  | { hash: string, modified: string }            // binary file (ISO 8601)
+  | { hash: string, modified: number }            // binary file (epoch ms)
 ```
 
 - `hash`: SHA-256 of file content. Same algorithm used locally and remotely — hashes are directly comparable.
@@ -143,7 +143,7 @@ interface FileMutation {
   content?: string                     // text content to write/push
   source?: "local" | "remote"          // binary: where to copy bytes from
   hash?: string                        // binary: SHA-256 hash of winning side
-  modified?: string                    // binary: modified date of winning side (ISO 8601)
+  modified?: number                    // binary: mtime of winning side (epoch ms)
 }
 ```
 
@@ -230,7 +230,7 @@ No changes to the type:
 ```ts
 type FileState =
   | { type: "text", content: string }
-  | { type: "binary", hash: string, modified?: Date }
+  | { type: "binary", hash: string, modified: number }
 ```
 
 But its role shifts. Previously, `FileState` was used in full maps that reconcile diffed against snapshots. Now, `FileState` appears inside `ChangeSet.added` and `ChangeSet.modified` — change detection has already happened, and `FileState` carries the content/metadata for files that are known to have changed.

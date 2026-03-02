@@ -139,15 +139,13 @@ class Stash extends Emitter<StashEvents> {
   static load(dir: string, globalConfig: GlobalConfig): Promise<Stash>
   static init(dir: string, globalConfig: GlobalConfig): Promise<Stash>
 
-  readonly connections: Record<string, ConnectionConfig>
+  get connections(): Record<string, ConnectionConfig>
 
   connect(provider: string, fields: Record<string, string>): Promise<void>
   disconnect(provider: string): Promise<void>
 
   sync(): Promise<void>                 // emits 'mutation' events as it works
   status(): StatusResult                // synchronous, no network
-
-  get config(): MergedConfig            // reads local config, merges with globalConfig
 
   // Private: scan disk + snapshot.json → local ChangeSet
   private scan(): ChangeSet
@@ -190,7 +188,7 @@ await stash.sync()
 2. **Fetch remote**: `provider.fetch(localSnapshot)` → remote `ChangeSet`
 3. **Reconcile**: `reconcile(local, remote)` → `FileMutation[]`
 4. **Compute snapshot**: `computeSnapshot(oldSnapshot, mutations)` → new `snapshot.json` in memory. Must happen before push because the new snapshot is included in the push payload.
-5. **Push to remote**: build `PushPayload` from mutations + new `snapshot.json`, call `provider.push(payload)`. Skip if payload is empty (no files, no deletions, and snapshot matches remote) — nothing to commit. On `PushConflictError` → retry from step 2 (reuse local ChangeSet, max 3 retries).
+5. **Push to remote**: build `PushPayload` from mutations + new `snapshot.json`, call `provider.push(payload)`. Skip if mutations array is empty — nothing changed, nothing to commit. On `PushConflictError` → retry from step 2 (reuse local ChangeSet, max 3 retries).
 6. **Apply to disk**: `apply(mutations, provider)` — write/delete files, emit mutation events. For binary files where `source: "remote"`, calls `provider.get(path)` and pipes to disk.
 7. **Save snapshots**: `saveSnapshot(snapshot, mutations)` — write `snapshot.json` + text files to `snapshot.local/`
 
@@ -277,18 +275,20 @@ Tracks the SHA-256 hash of every file's content at the time of last sync. Stored
 ```json
 {
   "hello.md": { "hash": "sha256-abc..." },
-  "image.png": { "hash": "sha256-def...", "modified": "2026-03-01T12:00:00Z" }
+  "image.png": { "hash": "sha256-def...", "modified": 1709290800000 }
 }
 ```
 
 ```ts
 type SnapshotEntry =
   | { hash: string }                              // text file
-  | { hash: string, modified: string }            // binary file (ISO 8601)
+  | { hash: string, modified: number }            // binary file (epoch ms)
 ```
 
 - `hash`: SHA-256 of file content. Same algorithm used locally and remotely — hashes are directly comparable.
-- `modified`: only present for binary files. Records when the file was last pushed. Used for last-modified-wins tiebreaker when both sides edit a binary file.
+- `modified`: only present for binary files. Epoch milliseconds (`Date.now()`). Set from `fs.stat().mtimeMs` at push time — the filesystem modification time of the file when it was pushed. Used for last-modified-wins tiebreaker when both sides edit a binary file.
+
+**Why `mtime`, not push time:** using the file's actual modification time means the most recently *edited* file wins, not the most recently *synced*. This matters when a machine is offline: if Machine A edits a file Monday and syncs Wednesday, while Machine B edited the same file Tuesday, Machine B's edit wins because it was edited more recently — even though Machine A synced later. Push time would incorrectly let Machine A's stale Monday edit overwrite Machine B's newer work.
 
 Pushed to remote as part of each sync commit. This is what makes efficient change detection possible — the provider can fetch one small JSON file and know exactly what changed.
 
@@ -308,7 +308,7 @@ interface FileMutation {
   content?: string                     // text content to write/push
   source?: "local" | "remote"          // binary: where to copy bytes from
   hash?: string                        // binary: SHA-256 hash of winning side
-  modified?: string                    // binary: modified date of winning side (ISO 8601)
+  modified?: number                    // binary: mtime of winning side (epoch ms)
 }
 ```
 
@@ -351,11 +351,11 @@ The state of a file that is known to have changed. Used inside `ChangeSet.added`
 ```ts
 type FileState =
   | { type: "text", content: string }
-  | { type: "binary", hash: string, modified?: Date }
+  | { type: "binary", hash: string, modified: number }
 ```
 
 - **Text**: full content string. Change detection has already happened (via `snapshot.json` hash comparison) before FileState is constructed.
-- **Binary**: SHA-256 hash. `modified` is present on local (from `fs.stat()`) and remote (from `snapshot.json`) — used for last-modified-wins. Actual binary bytes are fetched separately via `provider.get()` or read from disk.
+- **Binary**: SHA-256 hash. `modified` is epoch ms — from `fs.stat().mtimeMs` for local files, from `snapshot.json` for remote files. Used for last-modified-wins. Actual binary bytes are fetched separately via `provider.get()` or read from disk.
 
 ### PushPayload
 
@@ -449,22 +449,23 @@ const stash = await Stash.load(dir, globalConfig)
 
 ### How Stash manages config
 
-Stash holds `globalConfig` in memory (received at load time, never changes).
-
-`get config()` reads `.stash/config.local.json` from disk each time and merges with `globalConfig`. No caching — the file is tiny, reads are free, and this guarantees config is always fresh after `connect()` / `disconnect()` writes.
+Stash holds `globalConfig` and `_connections` in memory. `load()` reads `.stash/config.local.json` once at startup. `connect()` and `disconnect()` update `_connections` in memory and write to disk — no hidden I/O on property access.
 
 ```ts
 class Stash {
   private globalConfig: GlobalConfig
+  private _connections: Record<string, ConnectionConfig>
 
-  get config() {
-    const local = readJson(".stash/config.local.json")
-    return merge(this.globalConfig, local)
-  }
+  get connections() { return this._connections }
 
   connect(provider, fields) {
-    // write to .stash/config.local.json
-    // next config read automatically picks it up
+    this._connections[provider] = fields
+    writeJson(".stash/config.local.json", { connections: this._connections })
+  }
+
+  disconnect(provider) {
+    delete this._connections[provider]
+    writeJson(".stash/config.local.json", { connections: this._connections })
   }
 }
 ```
@@ -473,16 +474,20 @@ class Stash {
 
 When a provider is needed (e.g. during `sync()`):
 
-1. Read `this.config` (merges global + local)
-2. Look up provider class from registry by name
-3. Pass merged config to provider constructor
+1. Look up provider class from registry by name
+2. Merge `globalConfig[name]` + `_connections[name]` into the provider's typed config
+3. Pass to provider constructor
 
 ```ts
-const provider = new GitHubProvider(this.config.connections["github"])
-// { token: "ghp_...", repo: "user/repo" }
+const name = "github"
+const provider = new GitHubProvider({
+  ...this.globalConfig[name],
+  ...this._connections[name]
+})
+// GitHubConfig { token: "ghp_...", repo: "user/repo" }
 ```
 
-Provider receives a flat config object. It never reads or writes config files.
+Each provider defines its own config type (e.g. `GitHubConfig`). Provider receives a typed config object. It never reads or writes config files.
 
 ### CLI flow for `stash setup`
 
@@ -527,7 +532,7 @@ Machine A runs `stash sync`.
 ```
 snapshot.json (from last sync):
   hello.md  → { hash: "sha256-of-hello-world" }
-  image.png → { hash: "sha256-of-image", modified: "2026-02-28T12:00:00Z" }
+  image.png → { hash: "sha256-of-image", modified: 1709121600000 }
 ```
 
 ```
@@ -550,12 +555,12 @@ local ChangeSet = {
 remote snapshot.json:
   hello.md  → { hash: "sha256-of-hello-world!" }     # differs from local snapshot
   image.png → { hash: "sha256-of-image" }             # same — not fetched
-  photo.jpg → { hash: "sha256-of-photo", modified: "2026-03-01T10:00:00Z" }  # new
+  photo.jpg → { hash: "sha256-of-photo", modified: 1709290800000 }  # new
 ```
 
 ```
 remote ChangeSet = {
-  added:    { "photo.jpg": { type: "binary", hash: "sha256-of-photo", modified: 2026-03-01T10:00:00 } },
+  added:    { "photo.jpg": { type: "binary", hash: "sha256-of-photo", modified: 1709290800000 } },
   modified: { "hello.md":  { type: "text", content: "hello world!" } },
   deleted:  []
 }
@@ -578,7 +583,7 @@ Note: `image.png` has the same hash in both snapshots — it's not in the remote
 - → `{ path: "image.png", disk: "skip", remote: "delete" }`
 
 **`photo.jpg`** — absent from local ChangeSet (—), added remotely → write to disk (binary).
-- → `{ path: "photo.jpg", disk: "write", remote: "skip", source: "remote", hash: "sha256-of-photo", modified: "2026-03-01T10:00:00Z" }`
+- → `{ path: "photo.jpg", disk: "write", remote: "skip", source: "remote", hash: "sha256-of-photo", modified: 1709290800000 }`
 
 ### Step 4: Compute snapshot
 
@@ -588,7 +593,7 @@ Note: `image.png` has the same hash in both snapshots — it's not in the remote
 {
   "hello.md": { "hash": "sha256-of-hello-brave-world!" },
   "new.md": { "hash": "sha256-of-draft" },
-  "photo.jpg": { "hash": "sha256-of-photo", "modified": "2026-03-01T10:00:00Z" }
+  "photo.jpg": { "hash": "sha256-of-photo", "modified": 1709290800000 }
 }
 ```
 
@@ -651,3 +656,369 @@ photo.jpg  → <binary>                (unchanged)
 ```
 
 `image.png` is gone from both sides. No data was lost — every edit from both machines is preserved.
+
+---
+
+## Tests
+
+Unit and integration tests for Stash core. End-to-end tests are in `tests.md`.
+
+### Test Helpers
+
+#### FakeProvider
+
+An in-memory implementation of the `Provider` interface for testing Stash without network access. Stores files in a `Map<string, string | Buffer>` and a snapshot `Record<string, SnapshotEntry>`.
+
+```ts
+class FakeProvider implements Provider {
+  files: Map<string, string | Buffer>
+  snapshot: Record<string, SnapshotEntry>
+  pushLog: PushPayload[]              // records all push() calls for assertions
+
+  fetch(localSnapshot?): Promise<ChangeSet>   // diffs this.snapshot vs localSnapshot
+  get(path): Promise<Readable>                // streams from this.files
+  push(payload): Promise<void>                // applies to this.files + this.snapshot, logs to pushLog
+}
+```
+
+- `fetch()` compares its internal snapshot against the passed `localSnapshot`, returns a ChangeSet of differences. Text files have inline content from `this.files`. Binary files have hash + modified from `this.snapshot`.
+- `push()` applies the payload to its internal state (writes files, removes deletions, updates snapshot). Also appends the payload to `pushLog` for test assertions.
+- Can be configured to throw `PushConflictError` on the next `push()` call (for retry testing).
+
+#### Provider injection
+
+Stash normally constructs a provider from the registry during `sync()`. For testing, the provider registry is overridable — tests register `FakeProvider` under a test provider name, or Stash accepts a provider factory option that tests can use to inject `FakeProvider` directly. The exact mechanism is an implementation detail, but the key requirement is that integration tests can supply their own provider without touching the network.
+
+#### makeStash()
+
+Creates a temp directory, writes files, and returns an initialized Stash. Shorthand for the common test setup.
+
+```ts
+async function makeStash(
+  files?: Record<string, string | Buffer>,
+  opts?: { snapshot?: Record<string, SnapshotEntry>, snapshotLocal?: Record<string, string> }
+): Promise<{ stash: Stash, dir: string }>
+```
+
+- Writes files to disk.
+- If `snapshot` provided, writes `.stash/snapshot.json` and `.stash/snapshot.local/` — simulates a stash that has already synced.
+- Returns both the Stash instance and the directory path (for direct filesystem assertions).
+
+#### makeChangeSet()
+
+Builds a `ChangeSet` from a concise description. Avoids verbose Map construction in every test.
+
+```ts
+function makeChangeSet(desc: {
+  added?: Record<string, FileState>,
+  modified?: Record<string, FileState>,
+  deleted?: string[]
+}): ChangeSet
+```
+
+### Unit Tests
+
+#### scan()
+
+Scan reads all files from disk, hashes them, and compares against `snapshot.json` to produce a local ChangeSet.
+
+```
+1. No snapshot (first sync) — all files on disk are `added`
+   - Write hello.md and notes/todo.md to disk, no .stash/snapshot.json
+   - scan() → added: { "hello.md": ..., "notes/todo.md": ... }, modified: empty, deleted: empty
+
+2. Unchanged files — empty ChangeSet
+   - Write hello.md, create matching snapshot.json with correct hash
+   - scan() → all empty
+
+3. Modified file — detected by hash mismatch
+   - Write hello.md ("changed"), snapshot.json has hash of "original"
+   - scan() → modified: { "hello.md": { type: "text", content: "changed" } }
+
+4. Deleted file — in snapshot but not on disk
+   - snapshot.json has hello.md, but file doesn't exist on disk
+   - scan() → deleted: ["hello.md"]
+
+5. New file — on disk but not in snapshot
+   - Write new.md, snapshot.json exists but doesn't include new.md
+   - scan() → added: { "new.md": ... }
+
+6. Dotfiles excluded
+   - Write .hidden and .config/settings.json alongside visible.md
+   - scan() → only visible.md appears
+
+7. Symlinks excluded
+   - Write real.md, create symlink link.md → real.md
+   - scan() → only real.md appears
+
+8. .stash/ directory excluded
+   - Write .stash/config.local.json and .stash/snapshot.local/hello.md alongside visible.md
+   - scan() → only visible.md appears (all .stash/ contents ignored)
+
+9. Binary file detection
+   - Write a file with invalid UTF-8 bytes
+   - scan() → FileState has type: "binary" with hash and modified
+
+10. Nested directories
+    - Write a/b/c.md
+    - scan() → added: { "a/b/c.md": ... } (path preserved)
+
+11. Empty file
+    - Write empty.md with empty content
+    - scan() → correctly detected, type: "text", content: ""
+```
+
+#### reconcile()
+
+Takes two ChangeSets, returns FileMutation[]. Each row of the merge table gets a test. Uses `makeChangeSet()` for inputs.
+
+For tests involving text merge (both-modified, both-added), the snapshot.local content must be available. Reconcile reads the three-way base from `.stash/snapshot.local/` on disk — so tests must write the base content there via `makeStash({ snapshotLocal: { "a.md": "base content" } })`.
+
+```
+1.  Local modified, remote unchanged
+    - local: modified { "a.md": text "new" }
+    - remote: empty
+    - → { path: "a.md", disk: "skip", remote: "write", content: "new" }
+
+2.  Local unchanged, remote modified
+    - local: empty
+    - remote: modified { "a.md": text "new" }
+    - → { path: "a.md", disk: "write", remote: "skip", content: "new" }
+
+3.  Both modified (text) — calls mergeText()
+    - local: modified { "a.md": text "local" }
+    - remote: modified { "a.md": text "remote" }
+    - snapshot.local has base content
+    - → { path: "a.md", disk: "write", remote: "write", content: <merged> }
+
+4.  Both modified (binary) — last-modified-wins
+    - local: modified { "img.png": binary, hash: "aaa", modified: T1 }
+    - remote: modified { "img.png": binary, hash: "bbb", modified: T2 }
+    - T2 > T1 → source: "remote"
+    - T1 > T2 → source: "local"
+
+5.  Local added, remote absent
+    - local: added { "new.md": text "draft" }
+    - → { disk: "skip", remote: "write", content: "draft" }
+
+6.  Remote added, local absent
+    - remote: added { "new.md": text "draft" }
+    - → { disk: "write", remote: "skip", content: "draft" }
+
+7.  Both added (text) — merged
+    - local: added { "notes.md": text "A" }
+    - remote: added { "notes.md": text "B" }
+    - → { disk: "write", remote: "write", content: <merged> }
+
+8.  Both added (binary) — last-modified-wins
+    - Same as test 4 but with added instead of modified
+
+9.  Local deleted, remote absent
+    - local: deleted ["old.md"]
+    - → { disk: "skip", remote: "delete" }
+
+10. Remote deleted, local absent
+    - remote: deleted ["old.md"]
+    - → { disk: "delete", remote: "skip" }
+
+11. Local deleted, remote modified — content wins
+    - local: deleted ["a.md"]
+    - remote: modified { "a.md": text "saved" }
+    - → { disk: "write", remote: "skip", content: "saved" }
+
+12. Local modified, remote deleted — content wins
+    - local: modified { "a.md": text "saved" }
+    - remote: deleted ["a.md"]
+    - → { disk: "skip", remote: "write", content: "saved" }
+
+13. Both deleted
+    - local: deleted ["a.md"]
+    - remote: deleted ["a.md"]
+    - → { disk: "skip", remote: "skip" }
+```
+
+#### mergeText()
+
+Tests the diff-match-patch merge function directly.
+
+```
+1. Three-way, non-overlapping edits
+   - snapshot: "line1\nline2\nline3"
+   - local: "LINE1\nline2\nline3"
+   - remote: "line1\nline2\nLINE3"
+   - → "LINE1\nline2\nLINE3"
+
+2. Three-way, overlapping edits — both preserved
+   - snapshot: "hello world"
+   - local: "hello brave world"
+   - remote: "hello cruel world"
+   - → result contains both "brave" and "cruel"
+
+3. Two-way merge (no snapshot)
+   - snapshot: null
+   - local: "aaa\nbbb"
+   - remote: "bbb\nccc"
+   - → result contains content from both sides
+
+4. One side unchanged
+   - snapshot: "original"
+   - local: "original"
+   - remote: "changed"
+   - → "changed"
+
+5. Both sides make identical edit
+   - snapshot: "old"
+   - local: "new"
+   - remote: "new"
+   - → "new"
+
+6. Empty content
+   - snapshot: ""
+   - local: "added"
+   - remote: ""
+   - → "added"
+```
+
+#### computeSnapshot()
+
+Pure function: takes old snapshot + mutations, returns new snapshot.
+
+```
+1. Add new text file
+   - old: { "a.md": { hash: "aaa" } }
+   - mutation: { path: "b.md", content: "hello" }
+   - → new snapshot has both a.md (unchanged) and b.md (hash of "hello")
+
+2. Remove file deleted locally (pushed deletion to remote)
+   - old: { "a.md": { hash: "aaa" }, "b.md": { hash: "bbb" } }
+   - mutation: { path: "b.md", disk: "skip", remote: "delete" }
+   - → new snapshot has only a.md
+
+3. Remove file deleted remotely (applied deletion to disk)
+   - old: { "a.md": { hash: "aaa" }, "b.md": { hash: "bbb" } }
+   - mutation: { path: "b.md", disk: "delete", remote: "skip" }
+   - → new snapshot has only a.md
+
+4. Update modified text file
+   - old: { "a.md": { hash: "old-hash" } }
+   - mutation: { path: "a.md", content: "new content" }
+   - → new snapshot a.md hash matches SHA-256 of "new content"
+
+5. Binary file — uses hash and modified from mutation
+   - mutation: { path: "img.png", source: "remote", hash: "abc", modified: 1709290800000 }
+   - → snapshot entry: { hash: "abc", modified: 1709290800000 }
+
+6. No mutations — snapshot unchanged
+   - old: { "a.md": { hash: "aaa" } }
+   - mutations: []
+   - → identical to old
+```
+
+#### isValidText()
+
+```
+1. Valid UTF-8 string → true
+2. ASCII-only bytes → true
+3. Valid multi-byte UTF-8 (emoji, CJK) → true
+4. Invalid byte sequence (0xFF 0xFE) → false
+5. Latin-1 with bytes > 127 that aren't valid UTF-8 → false
+6. Empty buffer → true (empty file is text)
+7. Null bytes → false (binary indicator)
+```
+
+#### status()
+
+```
+1. No snapshot (never synced) — all files are added, lastSync is null
+2. All files match snapshot — empty result, lastSync is set
+3. Mix of added, modified, deleted — each list populated correctly
+4. Connections returned from stash.connections
+```
+
+### Integration Tests
+
+Integration tests use `FakeProvider` to test `sync()` end-to-end without network access. They verify the full flow: scan → fetch → reconcile → compute snapshot → push → apply → save snapshot.
+
+#### sync() with FakeProvider
+
+```
+1. First sync pushes all local files
+   - makeStash with files, connect, FakeProvider with empty state
+   - sync()
+   - FakeProvider.files has all local files
+   - FakeProvider.snapshot matches
+   - .stash/snapshot.json written
+   - .stash/snapshot.local/ has text file contents
+
+2. First sync pulls all remote files
+   - makeStash with no files, FakeProvider has files + snapshot
+   - sync()
+   - Files appear on disk
+   - .stash/snapshot.json and snapshot.local/ written
+
+3. Merge cycle
+   - makeStash with hello.md, sync (pushes to FakeProvider)
+   - Modify hello.md on disk
+   - Modify hello.md in FakeProvider (different region)
+   - sync()
+   - Disk has merged content
+   - FakeProvider has merged content
+   - Snapshots match
+
+4. Push payload correctness
+   - Sync with local edits
+   - Inspect FakeProvider.pushLog
+   - Verify files, deletions, and snapshot are all correct in the payload
+
+5. Mutation events emitted
+   - Subscribe to stash.on("mutation")
+   - sync()
+   - Verify mutation events match the expected FileMutation list
+
+6. PushConflictError triggers retry
+   - Configure FakeProvider to throw PushConflictError on first push()
+   - sync()
+   - Verify push was called twice (retry succeeded)
+   - Verify final state is correct
+
+7. Max retries exceeded
+   - Configure FakeProvider to always throw PushConflictError
+   - sync() → throws after 3 retries
+
+8. No connection — sync is a no-op
+   - makeStash with no connection
+   - sync()
+   - No errors, no FakeProvider interactions
+
+9. Single-flight guard
+   - Start sync() (use a slow FakeProvider that delays)
+   - Start second sync() concurrently
+   - Second call rejects or waits
+   - First completes normally
+
+10. Snapshot.local/ updated correctly
+    - Sync with text files
+    - Verify .stash/snapshot.local/ contains the correct text content
+    - Verify binary files are NOT in snapshot.local/
+
+11. Deleted files cleaned from snapshot.local/
+    - Sync, then delete a file, sync again
+    - Verify file removed from .stash/snapshot.local/
+```
+
+#### connect() / disconnect()
+
+```
+1. connect writes to config.local.json
+   - stash.connect("github", { repo: "user/repo" })
+   - Read .stash/config.local.json → has github connection
+
+2. disconnect removes from config.local.json
+   - Connect then disconnect
+   - Read .stash/config.local.json → no github connection
+
+3. config getter merges global + local
+   - Create stash with globalConfig: { github: { token: "t" } }
+   - Connect with { repo: "r" }
+   - stash.config → { github: { token: "t", repo: "r" } }
+```

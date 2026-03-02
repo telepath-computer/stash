@@ -1,6 +1,6 @@
 # TODO
 
-## Maybe
+## Things I'm considering
 
 - **Move/rename detection**: Currently a move is just delete + create. Could detect renames by content similarity (like git's >50% match). Main benefit: if machine A moves `foo→bar` while machine B edits `foo`, edits would land in `bar` instead of producing both files. Skipped for now because the simpler approach is safer (no data loss, user sees both files) and the complexity isn't justified yet.
 
