@@ -106,8 +106,8 @@ Shows:
 Three components:
 
 - **CLI** — pure UI. Parses commands, prints output. Delegates everything to Stash. Owns global config.
-- **Stash** — owns per-stash config, file I/O, snapshots, scanning, merge logic. Coordinates the provider.
-- **Provider** — transport only. Does not merge. Knows how to talk to a specific connection. Interface implemented by specific providers (e.g. GitHub).
+- **Stash** — owns per-stash config, file I/O, snapshots, scanning, merge logic. Coordinates the provider, but doesn't care which provider it is.
+- **Provider** — transport only. Does not merge. Does not know about or touch local files. Knows how to talk to a specific connection. Interface implemented by specific providers (e.g. GitHub).
 
 ### `.stash/` directory
 
@@ -190,7 +190,7 @@ await stash.sync()
 2. **Fetch remote**: `provider.fetch(localSnapshot)` → remote `ChangeSet`
 3. **Reconcile**: `reconcile(local, remote)` → `FileMutation[]`
 4. **Compute snapshot**: `computeSnapshot(oldSnapshot, mutations)` → new `snapshot.json` in memory. Must happen before push because the new snapshot is included in the push payload.
-5. **Push to remote**: build `PushPayload` from mutations + new `snapshot.json`, call `provider.push(payload)`. On `PushConflictError` → retry from step 2 (reuse local ChangeSet, max 3 retries).
+5. **Push to remote**: build `PushPayload` from mutations + new `snapshot.json`, call `provider.push(payload)`. Skip if payload is empty (no files, no deletions, and snapshot matches remote) — nothing to commit. On `PushConflictError` → retry from step 2 (reuse local ChangeSet, max 3 retries).
 6. **Apply to disk**: `apply(mutations, provider)` — write/delete files, emit mutation events. For binary files where `source: "remote"`, calls `provider.get(path)` and pipes to disk.
 7. **Save snapshots**: `saveSnapshot(snapshot, mutations)` — write `snapshot.json` + text files to `snapshot.local/`
 
