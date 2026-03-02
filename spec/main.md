@@ -19,19 +19,27 @@ Initializes the current directory as a stash. If the directory already contains 
 
 Running `stash init` in a directory that is already a stash informs the user, tells them they can delete the .stash directory if they need, and does nothing.
 
-### `stash remote set <provider:path>`
+### `stash setup <provider>`
 
-Sets the remote. Example: `stash remote set github:user/repo`. Replaces any existing remote.
+Configures global provider settings (e.g. auth). Provider declares required fields via its static spec. Accepts `--field value` flags or prompts interactively.
 
-One remote per stash (multiple remotes may be supported in future).
+Example: `stash setup github --token ghp_...` or `stash setup github` (prompts for token).
 
-### `stash remote`
+### `stash connect <provider>`
 
-Shows the current remote, or "no remote configured".
+Connects this stash to a provider. Provider declares required connection fields via its static spec. Accepts `--field value` flags or prompts interactively. If setup has not been done for this provider, prompts for setup fields too.
+
+Example: `stash connect github --repo user/repo` or `stash connect github` (prompts).
+
+One connection per stash per provider. Stored as a map keyed by provider name (supports multiple providers in future).
+
+### `stash disconnect <provider>`
+
+Removes the connection for the given provider from this stash.
 
 ### `stash sync`
 
-Syncs local files with the configured remote. This is the core operation.
+Syncs local files with configured connections. This is the core operation.
 
 **What happens:**
 
@@ -65,7 +73,7 @@ If a file is unchanged on the remote, that file is not touched at all, to ensure
 
 **First sync** with an empty remote: all local files are pushed up. First sync with a populated remote and no local files: all remote files are pulled down. First sync with both sides populated: files are two-way merged (no snapshot yet, so diff local vs remote directly — less precise than three-way, but no data is lost). The merged result becomes the first snapshot, enabling three-way merges from then on.
 
-**No remote configured:** sync is a no-op.
+**No connection configured:** sync is a no-op.
 
 **Single-flight:** only one sync runs at a time.
 
@@ -73,7 +81,7 @@ If a file is unchanged on the remote, that file is not touched at all, to ensure
 
 Shows:
 
-- Configured remote (if any).
+- Configured connections (if any).
 - Files changed locally since the last sync (added, modified, deleted).
 - Time since last sync.
 
@@ -97,24 +105,28 @@ Shows:
 
 Three components:
 
-- **CLI** — pure UI. Parses commands, prints output. Delegates everything to Stash. See Behavior section above.
-- **Stash** — owns everything: config, file I/O, snapshots, scanning, merge logic. Coordinates the provider.
-- **Provider** — transport only. Does not merge. Knows how to talk to a specific remote. Interface implemented by specific providers (e.g. GitHub).
+- **CLI** — pure UI. Parses commands, prints output. Delegates everything to Stash. Owns global config.
+- **Stash** — owns per-stash config, file I/O, snapshots, scanning, merge logic. Coordinates the provider.
+- **Provider** — transport only. Does not merge. Knows how to talk to a specific connection. Interface implemented by specific providers (e.g. GitHub).
 
 ### `.stash/` directory
 
 ```
 .stash/
-├── config.json                # remotes, metadata
-└── snapshot/                 # last-synced state per file
-    ├── notes/todo.md          # text: full content (snapshot for merge)
-    ├── README.md              # text: full content
-    └── images/photo.jpg.hash  # binary: SHA-256 hash only
+├── config.local.json          # connections config (local only, never pushed)
+├── snapshot.json              # hashes + modified (also pushed to remote)
+└── snapshot.local/            # text content for three-way merge (local only)
+    ├── notes/todo.md
+    └── README.md
 ```
 
-- **Text snapshots**: full file content, needed for three-way merge.
-- **Binary snapshots**: `.hash` file containing SHA-256 — enough to detect changes.
-- Updated after every successful sync.
+- `config.local.json`: per-stash connections config.
+- `snapshot.json`: SHA-256 hashes and metadata for all files. Pushed to remote.
+- `snapshot.local/`: full text file content for three-way merge base. Local only.
+
+Convention: `*.local.*` and `*.local/` are never pushed to remote.
+
+Updated after every successful sync.
 
 ### Stash
 
@@ -124,14 +136,18 @@ type StashEvents = {
 }
 
 class Stash extends Emitter<StashEvents> {
-  static load(dir: string): Promise<Stash>
-  static init(dir: string): Promise<Stash>
+  static load(dir: string, globalConfig: GlobalConfig): Promise<Stash>
+  static init(dir: string, globalConfig: GlobalConfig): Promise<Stash>
 
-  readonly remote: string | null         // current remote, read from config
-  setRemote(remote: string): Promise<void>  // writes config, instantiates provider
+  readonly connections: Record<string, ConnectionConfig>
+
+  connect(provider: string, fields: Record<string, string>): Promise<void>
+  disconnect(provider: string): Promise<void>
 
   sync(): Promise<void>                 // emits 'mutation' events as it works
   status(): StatusResult                // synchronous, no network
+
+  get config(): MergedConfig            // reads local config, merges with globalConfig
 
   // Private: apply merge table across all files, returns action per file
   private reconcile(
@@ -183,7 +199,41 @@ interface Provider {
 - `get()` streams a single binary file. Called after reconcile, only for binary files that need downloading.
 - `push()` applies writes and deletes. Always preceded by a `fetch()`.
 
-Provider format: `scheme:address` — extensible to any backend (`github:user/repo`, `s3:bucket/prefix`, `stash://host:port/name`). A `ProviderRegistry` maps scheme prefixes to provider constructors so new providers can be added in future.
+### Provider Spec
+
+Providers declare their configuration requirements via a static spec:
+
+```ts
+interface ProviderSpec {
+  setup: Field[]      // global, one-time (e.g. token)
+  connect: Field[]    // per-stash (e.g. repo)
+}
+
+interface Field {
+  name: string
+  label: string
+  secret?: boolean    // masks input in prompts
+}
+```
+
+Example:
+
+```ts
+class GitHubProvider implements Provider {
+  static spec: ProviderSpec = {
+    setup: [{ name: "token", label: "Personal access token", secret: true }],
+    connect: [{ name: "repo", label: "Repository (user/repo)" }]
+  }
+
+  constructor(config: { token: string, repo: string }) { ... }
+}
+```
+
+Provider registry is a simple name→class map:
+
+```ts
+const providers = { github: GitHubProvider }
+```
 
 ### Stash.reconcile()
 
@@ -277,7 +327,117 @@ interface StatusResult {
 }
 ```
 
-Remote is available via `stash.remote` — no need to duplicate here.
+Connections available via `stash.connections`.
+
+---
+
+## Config
+
+### Overview
+
+Config is split into two layers with clear ownership:
+
+- **Global config** — CLI-owned. Provider setup data (auth tokens, API keys) that spans all stashes. One file per machine.
+- **Per-stash config** — Stash-owned. Connection data specific to this stash. Lives inside `.stash/`.
+
+Neither layer knows how the other is stored or managed. They meet at `Stash.load(dir, globalConfig)` — CLI passes global config in, Stash merges with local config internally.
+
+### Global config
+
+Location: `~/.stash/config.json`. Respects `$XDG_CONFIG_HOME` if set (`$XDG_CONFIG_HOME/stash/config.json`). Directory (`~/.stash/`) allows room for future global state (cache, logs).
+
+Managed by CLI via `readGlobalConfig()` / `writeGlobalConfig()` utility functions. Written by `stash setup <provider>`.
+
+Shape — keyed by provider name, each provider owns its section:
+```json
+{
+  "github": {
+    "token": "ghp_..."
+  }
+}
+```
+
+Fields defined by the provider's `ProviderSpec.setup`.
+
+### Per-stash config
+
+Location: `.stash/config.local.json`. Never pushed to remote (`.local.` convention).
+
+Managed by Stash via `connect()` / `disconnect()` methods. Written by `stash connect <provider>`.
+
+Shape — `connections` map keyed by provider name:
+```json
+{
+  "connections": {
+    "github": {
+      "repo": "user/repo"
+    }
+  }
+}
+```
+
+Fields defined by the provider's `ProviderSpec.connect`.
+
+### How CLI instantiates Stash
+
+CLI reads global config from disk and passes it into Stash. Stash never reads global config itself.
+
+```ts
+const globalConfig = readGlobalConfig()
+const stash = await Stash.load(dir, globalConfig)
+```
+
+### How Stash manages config
+
+Stash holds `globalConfig` in memory (received at load time, never changes).
+
+`get config()` reads `.stash/config.local.json` from disk each time and merges with `globalConfig`. No caching — the file is tiny, reads are free, and this guarantees config is always fresh after `connect()` / `disconnect()` writes.
+
+```ts
+class Stash {
+  private globalConfig: GlobalConfig
+
+  get config() {
+    const local = readJson(".stash/config.local.json")
+    return merge(this.globalConfig, local)
+  }
+
+  connect(provider, fields) {
+    // write to .stash/config.local.json
+    // next config read automatically picks it up
+  }
+}
+```
+
+### Provider construction
+
+When a provider is needed (e.g. during `sync()`):
+
+1. Read `this.config` (merges global + local)
+2. Look up provider class from registry by name
+3. Pass merged config to provider constructor
+
+```ts
+const provider = new GitHubProvider(this.config.connections["github"])
+// { token: "ghp_...", repo: "user/repo" }
+```
+
+Provider receives a flat config object. It never reads or writes config files.
+
+### CLI flow for `stash setup`
+
+1. Look up provider class from registry
+2. Read `ProviderSpec.setup` fields
+3. For each field: use `--field value` flag if provided, otherwise prompt interactively (masked if `secret: true`)
+4. Write to global config under provider name
+
+### CLI flow for `stash connect`
+
+1. Look up provider class from registry
+2. Check global config for setup fields — if missing, prompt for them first (and write to global config)
+3. Read `ProviderSpec.connect` fields
+4. For each field: use `--field value` flag if provided, otherwise prompt interactively
+5. Call `stash.connect(providerName, fields)` — Stash writes to `.stash/config.local.json`
 
 ---
 
@@ -287,7 +447,7 @@ A concrete example of the full sync process.
 
 ### Setup
 
-Machine A and Machine B share a stash backed by `github:user/notes`. Both last synced when the stash contained:
+Machine A and Machine B share a stash connected to GitHub repo `user/notes`. Both last synced when the stash contained:
 
 ```
 hello.md    → "hello world"
@@ -302,22 +462,22 @@ Machine A runs `stash sync`.
 
 ### Step 1: Scan local
 
-Stash reads all files from disk and all snapshots from `.stash/snapshot/`.
+Stash reads all files from disk and all snapshots from `.stash/snapshot.json` and `.stash/snapshot.local/`.
 
 ```
 local (disk):
   hello.md  → { type: "text", content: "hello brave world" }
   new.md    → { type: "text", content: "draft" }
 
-snapshots (.stash/snapshot/):
-  hello.md  → { type: "text", content: "hello world" }
-  image.png → { type: "binary", hash: "abc123" }
+snapshot.json:
+  hello.md  → { hash: "sha256-of-hello-world" }
+  image.png → { hash: "sha256-of-image", modified: "2026-02-28T12:00:00Z" }
 ```
 
-Local changes detected (by comparing disk to snapshots):
-- `hello.md`: modified (content differs from snapshot)
-- `new.md`: added (on disk, no snapshot)
-- `image.png`: deleted (snapshot exists, not on disk)
+Local changes detected (by comparing disk to snapshot.json hashes):
+- `hello.md`: modified (content hash differs from snapshot)
+- `new.md`: added (on disk, not in snapshot.json)
+- `image.png`: deleted (in snapshot.json, not on disk)
 
 ### Step 2: Fetch remote
 
@@ -326,8 +486,8 @@ Local changes detected (by comparing disk to snapshots):
 ```
 remote:
   hello.md  → { type: "text", content: "hello world!" }
-  image.png → { type: "binary", hash: "abc123", modified: 2026-02-28T12:00:00 }
-  photo.jpg → { type: "binary", hash: "def456", modified: 2026-03-01T10:00:00 }
+  image.png → { type: "binary", hash: "sha256-of-image", modified: 2026-02-28T12:00:00 }
+  photo.jpg → { type: "binary", hash: "sha256-of-photo", modified: 2026-03-01T10:00:00 }
 ```
 
 ### Step 3: Reconcile
@@ -370,18 +530,25 @@ PushPayload:
 
 ### Step 6: Update snapshots
 
-Write new snapshots reflecting the merged result:
+Write `snapshot.json` reflecting the merged result:
+
+```json
+{
+  "hello.md": { "hash": "sha256-of-hello-brave-world!" },
+  "new.md": { "hash": "sha256-of-draft" },
+  "photo.jpg": { "hash": "sha256-of-photo", "modified": "2026-03-01T10:00:00Z" }
+}
+```
+
+Write text content to `snapshot.local/`:
 
 ```
-.stash/snapshot/
+.stash/snapshot.local/
   hello.md   → "hello brave world!"
   new.md     → "draft"
-  photo.jpg.hash  → SHA-256 of downloaded bytes
 ```
 
-`image.png` snapshot is deleted (file no longer exists).
-
-These become the base for the next sync's three-way merge.
+`image.png` removed from both. These become the base for the next sync's three-way merge.
 
 ### Result
 

@@ -1,6 +1,22 @@
 # CLI, Terminology + Config
 
-Replaces the "remote" model with a "connection" model. Providers declare their requirements via a static spec. Config is split between global (CLI-owned) and per-stash (Stash-owned). Driven by decisions 7, 8 in decisions.md.
+## Why
+
+The original spec models the relationship between a stash and its backend as a "remote" — borrowing git terminology (`stash remote set github:user/repo`). But stash isn't git. There are no branches, no refs, no push/pull distinction. The relationship is simpler: a stash is *connected* to a provider that syncs its files.
+
+The `scheme:address` format (`github:user/repo`) and `ProviderRegistry` that parses it are over-engineered for what we need. Each provider has different config requirements (GitHub needs a token + repo, a future p2p provider might need a peer address + port). A generic string format can't express this well.
+
+## What changes
+
+**"Remote" becomes "connection"** throughout the spec. CLI commands change from `stash remote set` to `stash connect` / `stash disconnect`. The `scheme:address` format and `ProviderRegistry` are removed.
+
+**Providers declare their requirements** via a static `ProviderSpec` with typed fields for both setup (global, e.g. auth token) and connect (per-stash, e.g. repo). The CLI reads these specs to know what to prompt for — fully generic across providers.
+
+**Config is split into two layers** with clear ownership. CLI owns global config (`~/.stash/config.json`) for provider setup data like auth tokens. Stash owns per-stash config (`.stash/config.local.json`) for connection data. CLI passes global config into `Stash.load()`, Stash merges with local config on demand via `get config()`.
+
+**`.stash/` directory layout changes.** `config.json` becomes `config.local.json`. Snapshot storage splits into `snapshot.json` (hashes, pushed to remote) and `snapshot.local/` (text content for merge, local only). Binary `.hash` files are removed — `snapshot.json` covers all files.
+
+Driven by decisions 7, 8 in decisions.md.
 
 ## Target: spec/main.md
 

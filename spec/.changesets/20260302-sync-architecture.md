@@ -1,6 +1,26 @@
 # Sync Architecture
 
-Replaces the three-full-maps reconcile model with a ChangeSet model. Adds `snapshot.json` for efficient change detection. Reorders sync flow so push happens before local disk writes. Adds retry logic for ref conflicts. Driven by decisions 3, 4, 5, 6 in decisions.md.
+## Why
+
+The original sync design has the provider return a full `Map<string, FileState>` for every file on the remote — all text content, all binary hashes — every single sync. Reconcile then takes three full maps (local, remote, snapshots) and walks the union of all paths to figure out what changed.
+
+This works but is wasteful. In a typical sync, 1-3 files changed out of hundreds. Downloading everything and diffing everything is slow and expensive, especially over the GitHub API.
+
+With the introduction of `snapshot.json` (a manifest of SHA-256 hashes stored both locally and on the remote), we can detect changes cheaply: compare hashes first, then only fetch the files that actually differ. This changes the fundamental shape of sync — instead of "give me everything, I'll figure out what changed", it becomes "tell me what changed, with content for those files only".
+
+## What changes
+
+**ChangeSet replaces full maps.** Both local scanning and remote fetching now produce a `ChangeSet` (added/modified/deleted files) rather than a map of all files. Reconcile takes two ChangeSets and only processes files that appear in at least one — unchanged files are skipped entirely.
+
+**Provider interface changes.** `fetch()` now accepts `knownHashes` (from local `snapshot.json`) and returns a `ChangeSet` of what changed on the remote, not a full file listing. The provider fetches the remote `snapshot.json`, diffs hashes, and only downloads changed file content.
+
+**Sync flow reordered.** Push now happens before local disk writes. This ensures that if push fails (e.g. ref conflict from another machine), no local state has been modified. The new `snapshot.json` is computed in memory and included in the push commit.
+
+**Retry logic added.** If the remote ref has moved between fetch and push (another machine synced), the provider throws `RefConflictError`. Stash catches it and retries from fetch with fresh remote data, reusing the original local ChangeSet (disk hasn't changed — single-flight guarantee). Max 3 retries.
+
+**PushPayload includes snapshot.** The push commit now includes the updated `snapshot.json` alongside file changes, so the remote manifest stays in sync.
+
+Driven by decisions 3, 4, 5, 6 in decisions.md.
 
 ## Target: spec/main.md
 
