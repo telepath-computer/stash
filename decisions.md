@@ -177,7 +177,9 @@ If another machine pushes between our fetch() and push(), the update ref call fa
 
 Push includes `snapshot.json` in the same commit (computed in memory before push). Local disk writes happen only after push succeeds. If local writes fail after successful push, next sync self-heals — remote has correct state, stale local snapshot triggers re-pull.
 
-Provider throws `RefConflictError` on ref update failure — it doesn't know about retries. Stash catches it and retries the fetch/reconcile/push loop, reusing the original local ChangeSet.
+Provider throws `PushConflictError` on ref update failure — it doesn't know about retries. Stash catches it and retries the fetch/reconcile/push loop, reusing the original local ChangeSet.
+
+Provider is stateful within a sync cycle — `fetch()` stores the HEAD commit SHA, `push()` uses it as parent. Constructed once per `sync()` call as a local variable (not a Stash instance property). If sync is interrupted, the instance is lost — but that's fine: before push, nothing changed anywhere; after push, next sync self-heals via stale snapshot detection.
 
 ### 7. Auth, CLI naming + provider spec
 

@@ -12,21 +12,21 @@ With the introduction of `snapshot.json` (a manifest of SHA-256 hashes stored bo
 
 **ChangeSet replaces full maps.** Both local scanning and remote fetching now produce a `ChangeSet` (added/modified/deleted files) rather than a map of all files. Reconcile takes two ChangeSets and only processes files that appear in at least one — unchanged files are skipped entirely.
 
-**Provider interface changes.** `fetch()` now accepts `knownHashes` (from local `snapshot.json`) and returns a `ChangeSet` of what changed on the remote, not a full file listing. The provider fetches the remote `snapshot.json`, diffs hashes, and only downloads changed file content.
+**Provider interface changes.** `fetch()` now accepts `localSnapshot` (the local `snapshot.json` content) and returns a `ChangeSet` of what changed on the remote, not a full file listing. The provider fetches the remote `snapshot.json`, compares hashes, and only downloads changed file content.
 
 **Sync flow reordered.** Push now happens before local disk writes. This ensures that if push fails (e.g. ref conflict from another machine), no local state has been modified. The new `snapshot.json` is computed in memory and included in the push commit.
 
-**Retry logic added.** If the remote ref has moved between fetch and push (another machine synced), the provider throws `RefConflictError`. Stash catches it and retries from fetch with fresh remote data, reusing the original local ChangeSet (disk hasn't changed — single-flight guarantee). Max 3 retries.
+**Retry logic added.** If the remote ref has moved between fetch and push (another machine synced), the provider throws `PushConflictError`. Stash catches it and retries from fetch with fresh remote data, reusing the original local ChangeSet (disk hasn't changed — single-flight guarantee). Max 3 retries.
 
 **PushPayload includes snapshot.** The push commit now includes the updated `snapshot.json` alongside file changes, so the remote manifest stays in sync.
 
-Driven by decisions 3, 4, 5, 6 in decisions.md.
-
 ## Target: spec/main.md
 
-### New type: ChangeSet
+---
 
-Add to Architecture section:
+## ChangeSet
+
+The core data structure for change detection. Both local scanning and remote fetching produce a ChangeSet — a summary of what changed since the last sync.
 
 ```ts
 interface ChangeSet {
@@ -36,21 +36,15 @@ interface ChangeSet {
 }
 ```
 
-Core data structure for both local scanning and remote fetching. Uses the same `FileState` type — text files have content, binary files have hash + modified.
+Uses the same `FileState` type — text files have content, binary files have hash + modified.
 
-### New type: SnapshotEntry
+**Local ChangeSet** is produced by scanning disk and comparing to `snapshot.json` hashes. A file whose content hash differs from `snapshot.json` is `modified`. A file on disk with no entry in `snapshot.json` is `added`. An entry in `snapshot.json` with no file on disk is `deleted`.
 
-```ts
-type SnapshotEntry =
-  | { hash: string }                              // text file
-  | { hash: string, modified: string }            // binary file (ISO 8601)
-```
+**Remote ChangeSet** is produced by the provider. It fetches the remote `snapshot.json`, compares hashes against the `localSnapshot` passed in, and only downloads content for files that differ.
 
-Used in `snapshot.json`. `modified` only present for binary files (last-modified-wins tiebreaker). `hash` is SHA-256 of file content for both text and binary.
+## snapshot.json
 
-### snapshot.json
-
-Stored both locally (`.stash/snapshot.json`) and on remote (`.stash/snapshot.json`). After a successful sync, both copies are identical. Between syncs they may diverge (remote updated by other machines, local unchanged until next sync).
+Tracks the SHA-256 hash of every file's content at the time of last sync. Stored both locally and on the remote — after a successful sync, both copies are identical. Between syncs they may diverge (remote updated by other machines, local unchanged until next sync).
 
 ```json
 {
@@ -59,29 +53,40 @@ Stored both locally (`.stash/snapshot.json`) and on remote (`.stash/snapshot.jso
 }
 ```
 
-Pushed to remote as part of each sync commit. Enables efficient change detection: fetch `snapshot.json` first, compare hashes, only download files that differ.
-
-### Provider interface
-
-Replace:
 ```ts
-fetch(): Promise<Map<string, FileState>>
+type SnapshotEntry =
+  | { hash: string }                              // text file
+  | { hash: string, modified: string }            // binary file (ISO 8601)
 ```
 
-With:
+- `hash`: SHA-256 of file content. Same algorithm used locally and remotely — hashes are directly comparable.
+- `modified`: only present for binary files. Records when the file was last pushed. Used for last-modified-wins tiebreaker when both sides edit a binary file.
+
+Pushed to remote as part of each sync commit. This is what makes efficient change detection possible — the provider can fetch one small JSON file and know exactly what changed.
+
+## Provider interface
+
+`fetch()` changes signature. Instead of returning all files, it returns only what changed:
+
 ```ts
-fetch(knownHashes?: Map<string, string>): Promise<ChangeSet>
+interface Provider {
+  fetch(localSnapshot?: Record<string, SnapshotEntry>): Promise<ChangeSet>
+  get(path: string): Promise<Readable>
+  push(payload: PushPayload): Promise<void>
+}
 ```
 
-- `knownHashes`: hash from local `snapshot.json` per file path. Provider compares against remote `snapshot.json` to determine what changed.
-- If `knownHashes` is undefined/empty (first sync): all remote files returned as `added`.
-- Provider fetches remote `snapshot.json` first, diffs against `knownHashes`, then fetches only changed file content.
+- `localSnapshot`: the local `snapshot.json` content. Provider compares hashes against remote `snapshot.json` to determine what changed.
+- If `localSnapshot` is undefined (first sync, no local snapshot): all remote files returned as `added`.
+- Provider fetches remote `snapshot.json` first, diffs against `localSnapshot`, then fetches only changed file content.
+- `get()` streams a single binary file from remote. Called after reconcile, only for binary files where reconcile determined `source: "remote"`. Binary content is fetched lazily because at fetch time we don't know if the file also changed locally — reconcile decides via last-modified-wins. If local wins, the remote bytes were never needed. Text is different: if both sides edited, merge always needs both versions, so text content is always useful and cheap to batch in `fetch()`.
+- `push()` is unchanged in behavior but `PushPayload` gains a `snapshot` field.
 
-`get()` and `push()` unchanged in signature.
+On push, if the remote ref has moved since fetch (another machine synced between our fetch and push), the provider throws `PushConflictError`. It does not retry — that's Stash's responsibility.
 
-### PushPayload
+## PushPayload
 
-Add `snapshot` field:
+Gains a `snapshot` field — the updated `snapshot.json` content to push alongside file changes in the same commit.
 
 ```ts
 interface PushPayload {
@@ -91,18 +96,10 @@ interface PushPayload {
 }
 ```
 
-### Stash.reconcile()
+## Stash.reconcile()
 
-Replace:
-```ts
-private reconcile(
-  local: Map<string, FileState>,
-  remote: Map<string, FileState>,
-  snapshots: Map<string, FileState>
-): FileMutation[]
-```
+Takes two ChangeSets instead of three full maps:
 
-With:
 ```ts
 private reconcile(
   local: ChangeSet,
@@ -110,9 +107,11 @@ private reconcile(
 ): FileMutation[]
 ```
 
-Only processes files that appear in at least one ChangeSet. Unchanged files are not in either set and are skipped automatically.
+Only processes files that appear in at least one ChangeSet. Unchanged files are not in either set and are never touched.
 
-The merge table mapping is the same, but the inputs are change types (added/modified/deleted) rather than raw file states compared against snapshots. Reconcile no longer needs snapshots as input — change detection has already happened.
+Change detection has already happened before reconcile — by the time it runs, we know exactly which files were added, modified, or deleted on each side. Reconcile applies the merge table to these change types directly.
+
+For text files that appear as `modified` or `added` on both sides, reconcile calls `mergeText()` using the snapshot from `snapshot.local/` as the three-way base.
 
 Merge table with ChangeSets:
 
@@ -120,11 +119,11 @@ Merge table with ChangeSets:
 |-------|--------|------|--------|------------------|
 | modified | — | skip | write | local content |
 | — | modified | write | skip | remote content |
-| modified | modified (text) | write | write | merged via `merge()` |
+| modified | modified (text) | write | write | merged via `mergeText()` |
 | modified | modified (binary) | write | write | source: last-modified wins |
 | added | — | skip | write | local content |
 | — | added | write | skip | remote content |
-| added | added (text) | write | write | merged via `merge()` |
+| added | added (text) | write | write | merged via `mergeText()` |
 | added | added (binary) | write | write | source: last-modified wins |
 | deleted | — | skip | delete | — |
 | — | deleted | delete | skip | — |
@@ -132,44 +131,119 @@ Merge table with ChangeSets:
 | modified | deleted | skip | write | local content (content wins) |
 | deleted | deleted | skip | skip | — |
 
-### Sync flow
+## FileMutation
 
-Replace current steps 1-7 with:
+Gains `hash` and `modified` fields for binary files, making each mutation self-contained — no need to look back at ChangeSets to build the snapshot.
 
-1. **Scan local**: read disk + local `snapshot.json` → local `ChangeSet`
-2. **Fetch remote**: `provider.fetch(knownHashes)` → remote `ChangeSet`
+```ts
+interface FileMutation {
+  path: string
+  disk: "write" | "delete" | "skip"
+  remote: "write" | "delete" | "skip"
+  content?: string                     // text content to write/push
+  source?: "local" | "remote"          // binary: where to copy bytes from
+  hash?: string                        // binary: SHA-256 hash of winning side
+  modified?: string                    // binary: modified date of winning side (ISO 8601)
+}
+```
+
+- `content`: present for text files. Used for disk writes, push payload, and snapshot hashing.
+- `source`, `hash`, `modified`: present for binary files. `source` tells sync where to stream bytes from. `hash` and `modified` go directly into the new snapshot entry.
+
+## Stash.mergeText()
+
+Renamed from `merge()` for clarity. Single-file text merge via diff-match-patch. No changes to signature or behavior:
+
+```ts
+private mergeText(snapshot: string | null, local: string, remote: string): string
+```
+
+## New Stash methods
+
+Four new private methods on Stash:
+
+```ts
+// Step 1: scan disk + snapshot.json → local ChangeSet
+private scan(): ChangeSet
+
+// Step 4: build new snapshot.json from old snapshot + mutations
+private computeSnapshot(
+  oldSnapshot: Record<string, SnapshotEntry>,
+  mutations: FileMutation[]
+): Record<string, SnapshotEntry>
+
+// Step 6: write/delete files on disk, emit mutation events
+private apply(mutations: FileMutation[], provider: Provider): Promise<void>
+
+// Step 7: write snapshot.json + snapshot.local/ text files to disk
+private saveSnapshot(
+  snapshot: Record<string, SnapshotEntry>,
+  mutations: FileMutation[]
+): Promise<void>
+```
+
+`scan()` reads all files from disk, hashes them, compares to `snapshot.json`. Files whose hash differs → `modified`. Files on disk with no snapshot entry → `added`. Snapshot entries with no file on disk → `deleted`.
+
+`computeSnapshot()` starts from the old snapshot (unchanged files carry over). For each mutation: text files → hash the `content` string; binary files → use `hash` and `modified` from the mutation; deleted files → remove entry.
+
+`apply()` executes mutations on disk. Writes text content, deletes files, emits `mutation` events. For binary files where `source: "remote"`, calls `provider.get(path)` and pipes to disk. For binary files where `source: "local"`, no disk write needed (file is already there).
+
+`saveSnapshot()` writes the computed `snapshot.json` to disk and updates `snapshot.local/` — writes text content for files that were added or modified, removes files that were deleted. Takes mutations to know which `snapshot.local/` files to update.
+
+## Provider lifecycle
+
+Provider is constructed once per `sync()` call as a local variable. It is stateful within a sync cycle — `fetch()` stores the remote HEAD commit SHA internally, `push()` uses it as the parent commit for conflict detection.
+
+Not stored as a Stash instance property. Each sync starts fresh — no stale state, no cleanup. If sync is interrupted at any point, the instance is discarded. Before push, nothing has changed anywhere. After push, next sync self-heals via stale snapshot detection.
+
+```ts
+async sync() {
+  const provider = buildProvider("github")  // from registry + this.config
+  const local = this.scan()
+  const remote = await provider.fetch(localSnapshot)
+  const mutations = this.reconcile(local, remote)
+  const snapshot = this.computeSnapshot(oldSnapshot, mutations)
+  await provider.push({ files, deletions, snapshot })
+  await this.apply(mutations, provider)
+  this.saveSnapshot(snapshot, mutations)
+}
+```
+
+## Sync flow
+
+1. **Scan local**: `scan()` → local `ChangeSet`
+2. **Fetch remote**: `provider.fetch(localSnapshot)` → remote `ChangeSet`
 3. **Reconcile**: `reconcile(local, remote)` → `FileMutation[]`
-4. **Compute snapshot**: build new `snapshot.json` in memory from mutations
-5. **Push to remote**: build `PushPayload` from mutations + new `snapshot.json`, call `provider.push(payload)`. On `RefConflictError` → retry from step 2 (reuse local ChangeSet, max 3 retries).
-6. **Apply to disk**: write/delete files, emit mutation events. For binary files where `source: "remote"`, call `provider.get(path)` and pipe to disk.
-7. **Update local snapshots**: write `snapshot.json` + text files to `snapshot.local/`
+4. **Compute snapshot**: `computeSnapshot(oldSnapshot, mutations)` → new `snapshot.json` in memory. Must happen before push because the new snapshot is included in the push payload.
+5. **Push to remote**: build `PushPayload` from mutations + new `snapshot.json`, call `provider.push(payload)`. On `PushConflictError` → retry from step 2 (reuse local ChangeSet, max 3 retries).
+6. **Apply to disk**: `apply(mutations, provider)` — write/delete files, emit mutation events. For binary files where `source: "remote"`, calls `provider.get(path)` and pipes to disk.
+7. **Save snapshots**: `saveSnapshot(snapshot, mutations)` — write `snapshot.json` + text files to `snapshot.local/`
 
-Key changes from original flow:
-- Push (step 5) happens before local disk writes (step 6). If push fails, no local state is changed. If push succeeds but local writes fail, next sync self-heals.
-- Retry logic: provider throws `RefConflictError` when remote ref has moved. Stash catches it and retries from step 2 with fresh remote data, reusing the original local ChangeSet (disk hasn't changed — single-flight guarantee).
-- `snapshot.json` is computed in memory (step 4) and included in the push payload, then written locally after success (step 7).
+Push happens before local disk writes. If push fails, no local state has been modified — safe to retry or abort. If push succeeds but local writes fail (unlikely — disk full, permissions), next sync self-heals: remote has the correct state, stale local snapshot triggers a re-pull.
 
-### Walkthrough section
+The retry loop reuses the original local ChangeSet because disk hasn't changed during sync (single-flight guarantee from main.md). Only the remote ChangeSet is re-fetched, since the remote may have moved.
 
-Update the full walkthrough to use ChangeSet model:
+## FileState
 
-**Step 1** becomes: scan disk, compare to `snapshot.json` hashes → local ChangeSet with added/modified/deleted.
+No changes to the type:
 
-**Step 2** becomes: `provider.fetch(knownHashes)` where knownHashes comes from local `snapshot.json`. Provider fetches remote `snapshot.json`, diffs hashes, fetches changed content → remote ChangeSet.
+```ts
+type FileState =
+  | { type: "text", content: string }
+  | { type: "binary", hash: string, modified?: Date }
+```
 
-**Step 3** becomes: `reconcile(localChangeSet, remoteChangeSet)` → `FileMutation[]`. Only files in at least one ChangeSet are processed.
+But its role shifts. Previously, `FileState` was used in full maps that reconcile diffed against snapshots. Now, `FileState` appears inside `ChangeSet.added` and `ChangeSet.modified` — change detection has already happened, and `FileState` carries the content/metadata for files that are known to have changed.
 
-**Steps 4-7** follow new ordering: compute snapshot → push → apply to disk → update local snapshots.
+## StatusResult
 
-**Step 6 (update snapshots)** becomes: write `snapshot.json` (hashes for all files) + write text content to `snapshot.local/`. No more binary `.hash` files.
+No changes to the type. Status now compares disk to `snapshot.json` hashes rather than reading full snapshot file content. Faster for large stashes.
 
-### FileState
+## Walkthrough updates
 
-No changes to the type itself. But update the description:
-- Remove: "Reconcile compares content to snapshot to detect changes" — change detection now happens before reconcile via `snapshot.json` hash comparison.
-- `FileState` is used within `ChangeSet.added` and `ChangeSet.modified` maps.
-
-### StatusResult
-
-No changes to the type. But update description:
-- "Scans disk vs snapshots" → "Scans disk vs `snapshot.json` hashes" (no longer reads full snapshot content for status).
+The walkthrough in main.md should be updated to reflect:
+- Step 1 produces a local ChangeSet (not a full map)
+- Step 2 uses `provider.fetch(localSnapshot)` producing a remote ChangeSet
+- Step 3 uses `reconcile(localChangeSet, remoteChangeSet)`
+- Steps 4-7 follow the new ordering: compute snapshot → push → apply to disk → update local snapshots
+- Step 6 writes `snapshot.json` + `snapshot.local/` text files (no binary `.hash` files)
