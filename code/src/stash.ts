@@ -58,6 +58,7 @@ function sortPaths(paths: Iterable<string>): string[] {
 }
 
 const STALE_SYNC_LOCK_MS = 10 * 60 * 1000;
+const SYNC_RETRY_LIMIT = 3;
 
 export class Stash extends Emitter<StashEvents> {
   private readonly dir: string;
@@ -155,39 +156,59 @@ export class Stash extends Emitter<StashEvents> {
 
       for (const name of connectionNames) {
         const provider = this.buildProvider(name);
-        const localSnapshot = this.readSnapshot();
-        const localChanges = this.scan();
+        let lastRetryError: Error | null = null;
+        let completed = false;
 
-        let mutations: FileMutation[] = [];
-        let nextSnapshot = cloneSnapshot(localSnapshot);
-        let attempts = 0;
-        while (attempts < 3) {
-          attempts += 1;
+        for (let attempt = 1; attempt <= SYNC_RETRY_LIMIT; attempt += 1) {
+          const localSnapshot = this.readSnapshot();
+          const localChanges = this.scan();
           const remoteChanges = await provider.fetch(localSnapshot);
-          mutations = this.reconcile(localChanges, remoteChanges);
-          nextSnapshot = this.computeSnapshot(localSnapshot, mutations);
+          const mutations = this.reconcile(localChanges, remoteChanges);
+          const nextSnapshot = this.computeSnapshot(localSnapshot, mutations);
 
-          if (mutations.length === 0) {
-            break;
-          }
-
-          const payload = await this.buildPushPayload(mutations, nextSnapshot);
-          if (payload.files.size === 0 && payload.deletions.length === 0) {
-            break;
-          }
-          try {
-            await provider.push(payload);
-            break;
-          } catch (error) {
-            if (error instanceof PushConflictError && attempts < 3) {
-              continue;
+          if (this.hasLocalDrift(localChanges)) {
+            lastRetryError = new Error("local files changed during sync");
+            if (attempt === SYNC_RETRY_LIMIT) {
+              throw lastRetryError;
             }
-            throw error;
+            continue;
           }
+
+          if (mutations.length > 0) {
+            const payload = await this.buildPushPayload(mutations, nextSnapshot);
+            if (payload.files.size > 0 || payload.deletions.length > 0) {
+              try {
+                await provider.push(payload);
+              } catch (error) {
+                if (error instanceof PushConflictError) {
+                  lastRetryError = error;
+                  if (attempt === SYNC_RETRY_LIMIT) {
+                    throw error;
+                  }
+                  continue;
+                }
+                throw error;
+              }
+            }
+          }
+
+          if (this.hasDiskWriteMutations(mutations) && this.hasLocalDrift(localChanges)) {
+            lastRetryError = new Error("local files changed during sync");
+            if (attempt === SYNC_RETRY_LIMIT) {
+              throw lastRetryError;
+            }
+            continue;
+          }
+
+          await this.apply(mutations, provider);
+          await this.saveSnapshot(nextSnapshot, mutations);
+          completed = true;
+          break;
         }
 
-        await this.apply(mutations, provider);
-        await this.saveSnapshot(nextSnapshot, mutations);
+        if (!completed) {
+          throw lastRetryError ?? new Error("sync failed");
+        }
       }
     } finally {
       this.syncInFlight = false;
@@ -593,6 +614,62 @@ export class Stash extends Emitter<StashEvents> {
     }
 
     return { files, deletions, snapshot };
+  }
+
+  private hasDiskWriteMutations(mutations: FileMutation[]): boolean {
+    return mutations.some((mutation) => mutation.disk === "write");
+  }
+
+  private hasLocalDrift(expected: ChangeSet): boolean {
+    const current = this.scan();
+    return !this.changeSetsEqual(expected, current);
+  }
+
+  private changeSetsEqual(a: ChangeSet, b: ChangeSet): boolean {
+    if (!this.fileStateMapsEqual(a.added, b.added)) {
+      return false;
+    }
+    if (!this.fileStateMapsEqual(a.modified, b.modified)) {
+      return false;
+    }
+    if (a.deleted.length !== b.deleted.length) {
+      return false;
+    }
+    for (let i = 0; i < a.deleted.length; i += 1) {
+      if (a.deleted[i] !== b.deleted[i]) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private fileStateMapsEqual(
+    left: Map<string, FileState>,
+    right: Map<string, FileState>,
+  ): boolean {
+    if (left.size !== right.size) {
+      return false;
+    }
+    for (const [path, leftState] of left) {
+      const rightState = right.get(path);
+      if (!rightState || !this.fileStatesEqual(leftState, rightState)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private fileStatesEqual(left: FileState, right: FileState): boolean {
+    if (left.type !== right.type) {
+      return false;
+    }
+    if (left.type === "text" && right.type === "text") {
+      return left.content === right.content;
+    }
+    if (left.type === "binary" && right.type === "binary") {
+      return left.hash === right.hash && left.modified === right.modified;
+    }
+    return false;
   }
 
   private readSnapshot(): Record<string, SnapshotEntry> {

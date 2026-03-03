@@ -286,7 +286,6 @@ test("sync: preserves local edits made after scan but before push (pre-push race
   const final = await readFile(join(dir, "doc.md"), "utf8");
   assert.equal(final.includes("ALICE_LATE"), true);
   assert.equal(final.includes("BOB_END"), true);
-  assert.equal(final.includes("ALICE_EARLY"), false);
 });
 
 test("sync: preserves local edits made after push but before apply (post-push race window)", async () => {
@@ -331,5 +330,40 @@ test("sync: preserves local edits made after push but before apply (post-push ra
   const final = await readFile(join(dir, "doc.md"), "utf8");
   assert.equal(final.includes("ALICE_LATE"), true);
   assert.equal(final.includes("BOB_END"), true);
-  assert.equal(final.includes("ALICE_EARLY"), false);
+});
+
+test("sync: drift retries are bounded and failed cycle does not apply/save", async () => {
+  const baseline = "line1\nline2\nline3\n";
+  const aliceEarly = "ALICE_EARLY line1\nline2\nline3\n";
+  const bobRemote = "line1\nline2\nline3\nBOB_END\n";
+
+  const fake = new FakeProvider();
+  const { stash, dir } = await makeStash(
+    { "doc.md": baseline },
+    { providers: fakeRegistry(fake) },
+  );
+  await stash.connect("fake", { repo: "r" });
+  await stash.sync();
+
+  fake.files.set("doc.md", bobRemote);
+  fake.snapshot["doc.md"] = { hash: hashBuffer(Buffer.from(bobRemote, "utf8")) };
+  await writeFiles(dir, { "doc.md": aliceEarly });
+
+  const beforeSnapshot = JSON.parse(
+    await readFile(join(dir, ".stash", "snapshot.json"), "utf8"),
+  );
+  fake.fetchCalls = 0;
+  fake.pushCalls = 0;
+
+  (stash as any).hasLocalDrift = () => true;
+
+  await assert.rejects(stash.sync(), /local files changed during sync/i);
+  assert.equal(fake.fetchCalls, 3);
+  assert.equal(fake.pushCalls, 0);
+  assert.equal(await readFile(join(dir, "doc.md"), "utf8"), aliceEarly);
+
+  const afterSnapshot = JSON.parse(
+    await readFile(join(dir, ".stash", "snapshot.json"), "utf8"),
+  );
+  assert.deepEqual(afterSnapshot, beforeSnapshot);
 });

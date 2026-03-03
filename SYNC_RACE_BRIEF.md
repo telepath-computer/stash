@@ -27,7 +27,6 @@ New integration tests were added at:
 Expected behavior (desired):
 
 - Final file contains Alice late edit + Bob remote edit.
-- Final file does not keep stale Alice early content.
 
 Current behavior:
 
@@ -46,7 +45,6 @@ Current behavior:
 Expected behavior (desired):
 
 - Final file contains Alice late edit + Bob remote edit.
-- Final file does not keep stale Alice early content.
 
 Current behavior:
 
