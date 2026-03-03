@@ -1,7 +1,7 @@
 # Spec: Stash
 
 - **[stash.md](stash.md)** — Core engine. Sync algorithm, merge table, file tracking, architecture, data types, per-stash config.
-- **[cli.md](cli.md)** — CLI commands, global config, stash registry, and the `stash watch` auto-sync feature.
+- **[cli.md](cli.md)** — CLI commands and global config.
 - **[github-provider.md](github-provider.md)** — GitHub provider implementation. Storage layout, auth, fetch/push/get API calls, error handling.
 - **[tests.md](tests.md)** — Testing strategy and end-to-end test scenarios. Unit/integration tests are specified in their respective spec files.
 

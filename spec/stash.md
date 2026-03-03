@@ -87,7 +87,6 @@ Shows:
 - No branches, no commits, no staging area.
 - No conflict markers to resolve manually.
 - No pull/push distinction — `sync()` does both.
-- No daemon required — `stash watch` can auto-sync in the background, but it's optional.
 
 ---
 
