@@ -4,3 +4,10 @@ export class PushConflictError extends Error {
     this.name = "PushConflictError";
   }
 }
+
+export class SyncLockError extends Error {
+  constructor(message = "sync already in progress") {
+    super(message);
+    this.name = "SyncLockError";
+  }
+}

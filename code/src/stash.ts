@@ -13,10 +13,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
+import { hostname } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Emitter } from "./emitter.ts";
-import { PushConflictError } from "./errors.ts";
+import { PushConflictError, SyncLockError } from "./errors.ts";
 import { providers as defaultProviders } from "./providers/index.ts";
 import type {
   ChangeSet,
@@ -31,6 +32,7 @@ import type {
   StatusResult,
 } from "./types.ts";
 import { hashBuffer, hashText } from "./utils/hash.ts";
+import { isTrackedPath } from "./utils/is-tracked-path.ts";
 import { isValidText } from "./utils/text.ts";
 
 type StashEvents = {
@@ -54,6 +56,8 @@ function cloneSnapshot(
 function sortPaths(paths: Iterable<string>): string[] {
   return [...paths].sort((a, b) => a.localeCompare(b));
 }
+
+const STALE_SYNC_LOCK_MS = 10 * 60 * 1000;
 
 export class Stash extends Emitter<StashEvents> {
   private readonly dir: string;
@@ -138,8 +142,9 @@ export class Stash extends Emitter<StashEvents> {
 
   async sync(): Promise<void> {
     if (this.syncInFlight) {
-      throw new Error("sync already in progress");
+      throw new SyncLockError();
     }
+    this.acquireSyncLock();
     this.syncInFlight = true;
 
     try {
@@ -186,6 +191,7 @@ export class Stash extends Emitter<StashEvents> {
       }
     } finally {
       this.syncInFlight = false;
+      this.releaseSyncLock();
     }
   }
 
@@ -614,6 +620,86 @@ export class Stash extends Emitter<StashEvents> {
     );
   }
 
+  private acquireSyncLock(): void {
+    const lockPath = this.syncLockPath();
+    const payload = JSON.stringify(
+      {
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        hostname: hostname(),
+      },
+      null,
+      2,
+    );
+
+    if (this.tryCreateSyncLock(lockPath, payload)) {
+      return;
+    }
+
+    this.maybeReclaimStaleSyncLock(lockPath);
+    if (!this.tryCreateSyncLock(lockPath, payload)) {
+      throw new SyncLockError();
+    }
+  }
+
+  private tryCreateSyncLock(lockPath: string, payload: string): boolean {
+    try {
+      writeFileSync(lockPath, payload, { encoding: "utf8", flag: "wx" });
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  private maybeReclaimStaleSyncLock(lockPath: string): void {
+    const startedAt = this.readSyncLockStartedAt(lockPath);
+    if (!startedAt) {
+      return;
+    }
+
+    const startedAtMs = Date.parse(startedAt);
+    if (Number.isNaN(startedAtMs)) {
+      return;
+    }
+    if (Date.now() - startedAtMs <= STALE_SYNC_LOCK_MS) {
+      return;
+    }
+
+    try {
+      unlinkSync(lockPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+
+  private readSyncLockStartedAt(lockPath: string): string | null {
+    try {
+      const raw = readFileSync(lockPath, "utf8");
+      const parsed = JSON.parse(raw) as { startedAt?: unknown };
+      if (typeof parsed.startedAt !== "string") {
+        return null;
+      }
+      return parsed.startedAt;
+    } catch {
+      return null;
+    }
+  }
+
+  private releaseSyncLock(): void {
+    try {
+      unlinkSync(this.syncLockPath());
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+
   private listTrackedFiles(): string[] {
     const root = this.dir;
     const paths: string[] = [];
@@ -623,12 +709,11 @@ export class Stash extends Emitter<StashEvents> {
         a.name.localeCompare(b.name),
       );
       for (const entry of entries) {
-        if (entry.name.startsWith(".")) {
-          continue;
-        }
-
         const absPath = join(currentDir, entry.name);
         const relPath = relative(root, absPath).split("\\").join("/");
+        if (!isTrackedPath(relPath)) {
+          continue;
+        }
         const stat = lstatSync(absPath);
         if (stat.isSymbolicLink()) {
           continue;
@@ -669,5 +754,9 @@ export class Stash extends Emitter<StashEvents> {
 
   private snapshotLocalDir(): string {
     return join(this.dir, ".stash", "snapshot.local");
+  }
+
+  private syncLockPath(): string {
+    return join(this.dir, ".stash", "sync.lock");
   }
 }

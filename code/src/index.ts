@@ -1,6 +1,6 @@
 export { Stash } from "./stash.ts";
 export { GitHubProvider } from "./providers/github-provider.ts";
-export { PushConflictError } from "./errors.ts";
+export { PushConflictError, SyncLockError } from "./errors.ts";
 export {
   getGlobalConfigPath,
   readGlobalConfig,

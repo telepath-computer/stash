@@ -65,7 +65,19 @@ If a file is unchanged on the remote, that file is not touched at all, to ensure
 
 **No connection configured:** sync is a no-op.
 
-**Single-flight:** only one sync runs at a time.
+**Single-flight:** only one sync runs at a time per process. A concurrent call throws `SyncLockError`.
+
+**Cross-process safety:** `sync()` also acquires `.stash/sync.lock` before running. If another process holds the lock, `sync()` throws `SyncLockError`.
+
+Lock details:
+- Lock file: `.stash/sync.lock`
+- Acquire via atomic create (`wx` flag). If create fails, lock is held.
+- Lock file content is JSON:
+  ```json
+  { "pid": 12345, "startedAt": "2026-03-03T12:00:00Z", "hostname": "machine-a" }
+  ```
+- Stale TTL: 10 minutes. If `startedAt` is older than 10 minutes, assume crashed process, delete lock, retry acquire once.
+- Lock is released in `finally` (delete `.stash/sync.lock`).
 
 ### `stash.status()`
 
@@ -81,6 +93,7 @@ Shows:
 - Dotfiles (files/directories starting with `.`) are ignored.
 - The `.stash/` metadata directory is ignored.
 - Symlinks are ignored.
+- Path filtering is shared between scan and watch via a single `isTrackedPath()` utility.
 
 ### What users never need to think about
 
@@ -104,6 +117,7 @@ Three components:
 .stash/
 ├── config.local.json          # connections config (local only, never pushed)
 ├── snapshot.json              # hashes + modified (also pushed to remote)
+├── sync.lock                  # ephemeral sync lock (local only)
 └── snapshot.local/            # text content for three-way merge (local only)
     ├── notes/todo.md
     └── README.md
@@ -111,9 +125,12 @@ Three components:
 
 - `config.local.json`: per-stash connections config.
 - `snapshot.json`: SHA-256 hashes and metadata for all files. Pushed to remote.
+- `sync.lock`: cross-process sync lock file. Created only while `sync()` is running. Local only.
 - `snapshot.local/`: full text file content for three-way merge base. Local only.
 
 Convention: `*.local.*` and `*.local/` are never pushed to remote.
+
+`sync.lock` is also never pushed to remote.
 
 Updated after every successful sync.
 
@@ -163,7 +180,7 @@ class Stash extends Emitter<StashEvents> {
 }
 ```
 
-Extends `Emitter` from `ref/emitter.ts` (typed event emitter using `mitt`). `sync()` emits `mutation` events as actions are applied. CLI subscribes for live output:
+Extends `Emitter` from `@rupertsworld/emitter`. `sync()` emits `mutation` events as actions are applied. CLI subscribes for live output:
 
 ```ts
 stash.on("mutation", (action) => {
@@ -172,7 +189,19 @@ stash.on("mutation", (action) => {
 await stash.sync()
 ```
 
+### Error types
+
+```ts
+class PushConflictError extends Error {}
+class SyncLockError extends Error {}
+```
+
+`SyncLockError` is thrown when a sync cannot start because:
+- Another sync is already running in this process
+- `.stash/sync.lock` is held by another process (and is not reclaimable as stale)
+
 `sync()` flow:
+0. **Acquire sync lock**: in-process `syncInFlight` check + `.stash/sync.lock` file lock
 1. **Scan local**: `scan()` → local `ChangeSet`
 2. **Fetch remote**: `provider.fetch(localSnapshot)` → remote `ChangeSet`
 3. **Reconcile**: `reconcile(local, remote)` → `FileMutation[]`
@@ -180,12 +209,54 @@ await stash.sync()
 5. **Push to remote**: build `PushPayload` from mutations + new `snapshot.json`, call `provider.push(payload)`. Skip if mutations array is empty — nothing changed, nothing to commit. On `PushConflictError` → retry from step 2 (reuse local ChangeSet, max 3 retries).
 6. **Apply to disk**: `apply(mutations, provider)` — write/delete files, emit mutation events. For binary files where `source: "remote"`, calls `provider.get(path)` and pipes to disk.
 7. **Save snapshots**: `saveSnapshot(snapshot, mutations)` — write `snapshot.json` + text files to `snapshot.local/`
+8. **Release sync lock**: clear in-process flag and delete `.stash/sync.lock` in `finally`
 
 Push happens before local disk writes. If push fails, no local state has been modified — safe to retry or abort. If push succeeds but local writes fail (unlikely — disk full, permissions), next sync self-heals: remote has the correct state, stale local snapshot triggers a re-pull.
 
 The retry loop reuses the original local ChangeSet because disk hasn't changed during sync (single-flight guarantee). Only the remote ChangeSet is re-fetched, since the remote may have moved.
 
 Provider is constructed once per `sync()` call as a local variable. It is stateful within a sync cycle — `fetch()` stores the remote HEAD commit SHA internally, `push()` uses it as the parent commit for conflict detection. Not stored as a Stash instance property — each sync starts fresh.
+
+### Sync lock
+
+`sync()` uses two guards:
+
+1. **In-process guard** (`syncInFlight`) — prevents concurrent sync calls in the same process.
+2. **Cross-process file lock** (`.stash/sync.lock`) — prevents concurrent sync calls across processes.
+
+Acquire order in `sync()`:
+
+1. Check `syncInFlight`; if true, throw `SyncLockError`.
+2. Acquire `.stash/sync.lock`.
+3. Set `syncInFlight = true`.
+4. Run sync steps.
+5. In `finally`: clear `syncInFlight` and delete `.stash/sync.lock`.
+
+Acquire uses atomic file create (`wx`). If create fails, `sync()` reads lock metadata and checks staleness:
+- Parse `startedAt` from lock JSON.
+- If lock is older than 10 minutes, delete lock and retry `wx` once.
+- If retry still fails, throw `SyncLockError`.
+
+Lock metadata:
+
+```json
+{ "pid": 12345, "startedAt": "2026-03-03T12:00:00Z", "hostname": "machine-a" }
+```
+
+### Path filtering
+
+The tracked-path predicate is a shared utility in `src/utils/`:
+
+```ts
+function isTrackedPath(path: string): boolean
+```
+
+Rules:
+- Regular paths return `true`
+- Dotfiles and files inside dot-directories return `false`
+- Paths under `.stash/` return `false`
+
+Symlink filtering remains filesystem-based (`lstat().isSymbolicLink()`), but both scan and watch use the same `isTrackedPath()` predicate first so path inclusion rules stay identical.
 
 ### Provider
 
@@ -883,6 +954,53 @@ Pure function: takes old snapshot + mutations, returns new snapshot.
 2. All files match snapshot — empty result, lastSync is set
 3. Mix of added, modified, deleted — each list populated correctly
 4. Connections returned from stash.connections
+```
+
+#### sync lock
+
+```
+1. Lock acquired and released on successful sync
+   - makeStash with files, connect, FakeProvider
+   - sync()
+   - .stash/sync.lock does not exist after sync completes
+
+2. Lock released on sync failure
+   - makeStash, connect, FakeProvider that throws on push
+   - sync() → throws
+   - .stash/sync.lock does not exist
+
+3. SyncLockError when lock held by another process
+   - makeStash, connect
+   - Manually write .stash/sync.lock with recent startedAt
+   - sync() → throws SyncLockError
+
+4. Stale lock is reclaimed
+   - makeStash, connect, FakeProvider
+   - Write .stash/sync.lock with startedAt 15 minutes ago
+   - sync() → succeeds (stale lock reclaimed)
+   - .stash/sync.lock does not exist after sync
+
+5. Stale lock reclaim race
+   - makeStash, connect
+   - Write .stash/sync.lock with startedAt 15 minutes ago
+   - Delete lock and immediately re-create with recent startedAt (simulate race)
+   - sync() → throws SyncLockError
+
+6. In-process single-flight throws SyncLockError
+   - Start sync() with a slow FakeProvider
+   - Call sync() again concurrently
+   - Second call throws SyncLockError
+   - First completes normally
+```
+
+#### isTrackedPath()
+
+```
+1. Regular file path → true
+2. Dotfile (.hidden) → false
+3. Dot-directory (.config/settings.json) → false
+4. .stash/ path → false
+5. Nested regular path (a/b/c.md) → true
 ```
 
 ### Integration Tests

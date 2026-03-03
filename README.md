@@ -24,9 +24,22 @@ Now sync:
 stash sync
 ```
 
-That's it. Local changes are pushed, remote changes are pulled, concurrent edits are merged. There's no separate push or pull — sync does both.
+Local changes are pushed, remote changes are pulled, concurrent edits are merged. There's no separate push or pull — sync does both.
 
-Run `stash status` to see what's changed since the last sync, and `stash disconnect github` to remove the connection.
+### Watch
+
+```
+stash watch
+```
+
+Keeps your stash in sync continuously. Local edits are pushed, remote changes are pulled, and merges happen automatically in the background. Press `.` to sync immediately, `q` to quit.
+
+### Other commands
+
+```
+stash status          # show connections and local changes
+stash disconnect github
+```
 
 ## How merging works
 
@@ -38,6 +51,4 @@ Binary files use last-modified-wins.
 
 ## File tracking
 
-All files in the stash directory are tracked automatically.
-
-Dotfiles, dot-directories, and symlinks are ignored.
+All files in the stash directory are tracked automatically. Dotfiles, dot-directories, and symlinks are ignored.

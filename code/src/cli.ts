@@ -5,6 +5,9 @@ import { input, password } from "@inquirer/prompts";
 import { readGlobalConfig, writeGlobalConfig } from "./global-config.ts";
 import { providers } from "./providers/index.ts";
 import { Stash } from "./stash.ts";
+import { LiveLine } from "./ui/live-line.ts";
+import { SyncRenderer } from "./ui/sync-renderer.ts";
+import { watch as watchStash } from "./watch.ts";
 import type { Field, ProviderClass } from "./types.ts";
 
 function getProvider(name: string): ProviderClass {
@@ -96,13 +99,37 @@ async function runDisconnect(providerName: string): Promise<void> {
 
 async function runSync(): Promise<void> {
   const stash = await Stash.load(process.cwd(), await readGlobalConfig());
-  stash.on("mutation", (mutation) => {
-    console.log(
-      `${mutation.path}: disk=${mutation.disk}, remote=${mutation.remote}`,
-    );
+  const line = new LiveLine(process.stdout);
+  const { green, red } = line.colors;
+  const renderer = new SyncRenderer(line);
+  const subscription = stash.on("mutation", (mutation) => {
+    renderer.onMutation(mutation);
   });
-  await stash.sync();
-  console.log("Sync complete.");
+
+  line.startSpinner("checking...");
+
+  try {
+    await stash.sync();
+    const summary = renderer.done();
+    line.print(summary ? `${green("✓")} synced (${summary})` : `${green("✓")} up to date`);
+  } catch (error) {
+    renderer.error(error as Error);
+    line.print(`${red("✗")} sync failed: ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+  } finally {
+    subscription.dispose();
+    renderer.dispose();
+    line.dispose();
+  }
+}
+
+async function runWatch(): Promise<void> {
+  const dir = process.cwd();
+  const stash = await Stash.load(dir, await readGlobalConfig());
+  if (Object.keys(stash.connections).length === 0) {
+    throw new Error("no connection configured — run `stash connect <provider>` first");
+  }
+  await watchStash(stash, { dir, stdin: process.stdin, stdout: process.stdout });
 }
 
 async function runStatus(): Promise<void> {
@@ -155,6 +182,7 @@ async function main(argv = process.argv): Promise<void> {
     });
 
   program.command("sync").description("Sync local files with connections").action(runSync);
+  program.command("watch").description("Watch and sync continuously").action(runWatch);
   program.command("status").description("Show local stash status").action(runStatus);
 
   const commandName = argv[2];

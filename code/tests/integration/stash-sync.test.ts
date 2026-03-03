@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { readFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { hashBuffer } from "../../src/utils/hash.ts";
-import { PushConflictError } from "../../src/errors.ts";
+import { PushConflictError, SyncLockError } from "../../src/errors.ts";
 import { FakeProvider } from "../helpers/fake-provider.ts";
 import { makeStash, writeFiles } from "../helpers/make-stash.ts";
 
@@ -162,7 +162,7 @@ test("sync: single-flight guard rejects concurrent sync", async () => {
   };
 
   const first = stash.sync();
-  await assert.rejects(stash.sync(), /already in progress/i);
+  await assert.rejects(stash.sync(), SyncLockError);
   await first;
 });
 
