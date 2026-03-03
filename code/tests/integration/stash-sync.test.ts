@@ -19,6 +19,14 @@ function fakeRegistry(fake: FakeProvider) {
   return { fake: TestProvider as any };
 }
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
 test("sync: first sync pushes all local files", async () => {
   const fake = new FakeProvider();
   const { stash, dir } = await makeStash(
@@ -234,4 +242,94 @@ test("sync: remote-source binary winner is not re-uploaded", async () => {
     assert.equal(fake.pushLog.length, 0);
   }
   assert.equal(fake.getCalls, 1);
+});
+
+test("sync: preserves local edits made after scan but before push (pre-push race window)", async () => {
+  const baseline = "line1\nline2\nline3\n";
+  const aliceEarly = "ALICE_EARLY line1\nline2\nline3\n";
+  const aliceLate = "ALICE_LATE line1\nline2\nline3\n";
+  const bobRemote = "line1\nline2\nline3\nBOB_END\n";
+
+  const fake = new FakeProvider();
+  const { stash, dir } = await makeStash(
+    { "doc.md": baseline },
+    { providers: fakeRegistry(fake) },
+  );
+  await stash.connect("fake", { repo: "r" });
+  await stash.sync();
+
+  // Bob's change exists remotely before Alice starts this sync.
+  fake.files.set("doc.md", bobRemote);
+  fake.snapshot["doc.md"] = { hash: hashBuffer(Buffer.from(bobRemote, "utf8")) };
+
+  // Alice starts with an early local edit that should participate in merge.
+  await writeFiles(dir, { "doc.md": aliceEarly });
+
+  // Pause fetch so we can mutate local file after scan() has already run.
+  const gate = deferred();
+  const fetchStarted = deferred();
+  const originalFetch = fake.fetch.bind(fake);
+  fake.fetch = async (...args) => {
+    fetchStarted.resolve();
+    await gate.promise;
+    return originalFetch(...args);
+  };
+
+  const syncPromise = stash.sync();
+  await fetchStarted.promise;
+
+  // This edit happens in-flight and is not represented in localChanges.
+  await writeFiles(dir, { "doc.md": aliceLate });
+  gate.resolve();
+  await syncPromise;
+
+  const final = await readFile(join(dir, "doc.md"), "utf8");
+  assert.equal(final.includes("ALICE_LATE"), true);
+  assert.equal(final.includes("BOB_END"), true);
+  assert.equal(final.includes("ALICE_EARLY"), false);
+});
+
+test("sync: preserves local edits made after push but before apply (post-push race window)", async () => {
+  const baseline = "line1\nline2\nline3\n";
+  const aliceEarly = "ALICE_EARLY line1\nline2\nline3\n";
+  const aliceLate = "ALICE_LATE line1\nline2\nline3\n";
+  const bobRemote = "line1\nline2\nline3\nBOB_END\n";
+
+  const fake = new FakeProvider();
+  const { stash, dir } = await makeStash(
+    { "doc.md": baseline },
+    { providers: fakeRegistry(fake) },
+  );
+  await stash.connect("fake", { repo: "r" });
+  await stash.sync();
+
+  // Bob's change exists remotely before Alice starts this sync.
+  fake.files.set("doc.md", bobRemote);
+  fake.snapshot["doc.md"] = { hash: hashBuffer(Buffer.from(bobRemote, "utf8")) };
+
+  // Alice starts with an early local edit that should participate in merge.
+  await writeFiles(dir, { "doc.md": aliceEarly });
+
+  // Pause right after provider.push() has applied remote state, but before sync proceeds to apply().
+  const gate = deferred();
+  const pushCompleted = deferred();
+  const originalPush = fake.push.bind(fake);
+  fake.push = async (payload) => {
+    await originalPush(payload);
+    pushCompleted.resolve();
+    await gate.promise;
+  };
+
+  const syncPromise = stash.sync();
+  await pushCompleted.promise;
+
+  // This edit happens after remote push, before local apply writes merged content.
+  await writeFiles(dir, { "doc.md": aliceLate });
+  gate.resolve();
+  await syncPromise;
+
+  const final = await readFile(join(dir, "doc.md"), "utf8");
+  assert.equal(final.includes("ALICE_LATE"), true);
+  assert.equal(final.includes("BOB_END"), true);
+  assert.equal(final.includes("ALICE_EARLY"), false);
 });
