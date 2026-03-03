@@ -4,13 +4,11 @@ Conflict-free synced folders. Multiple people and machines edit the same files â
 
 ## Quick start
 
-You'll need Node.js v22.6+ (native TypeScript support). From the `code/` directory:
-
 ```
-npm install && npm link
+npm install -g @telepath-computer/stash
 ```
 
-Then set up a stash and connect it to a GitHub repo:
+Set up a stash and connect it to a GitHub repo:
 
 ```
 stash setup github          # one-time: provide your GitHub token
@@ -52,3 +50,13 @@ Binary files use last-modified-wins.
 ## File tracking
 
 All files in the stash directory are tracked automatically. Dotfiles, dot-directories, and symlinks are ignored.
+
+## Development
+
+Requires Node.js v22.6+. From the `code/` directory:
+
+```
+npm install
+npm link
+npm test
+```
