@@ -13,6 +13,10 @@ Conflict-free synced folders. Multiple editors (humans, AI agents, scripts) read
 
 ## Behavior
 
+### `stash`
+
+Running `stash` with no command displays help.
+
 ### `stash init`
 
 Initializes the current directory as a stash. If the directory already contains files, they are included — nothing is lost or moved.
@@ -21,13 +25,13 @@ Running `stash init` in a directory that is already a stash informs the user, te
 
 ### `stash setup <provider>`
 
-Configures global provider settings (e.g. auth). Provider declares required fields via its static spec. Accepts `--field value` flags or prompts interactively.
+Configures global provider settings (e.g. auth). Provider declares required fields via its static spec. Accepts `--field value` or `--field=value` flags, or prompts interactively.
 
 Example: `stash setup github --token ghp_...` or `stash setup github` (prompts for token).
 
 ### `stash connect <provider>`
 
-Connects this stash to a provider. Provider declares required connection fields via its static spec. Accepts `--field value` flags or prompts interactively. If setup has not been done for this provider, prompts for setup fields too.
+Connects this stash to a provider. Provider declares required connection fields via its static spec. Accepts `--field value` or `--field=value` flags, or prompts interactively. If setup has not been done for this provider, prompts for setup fields too.
 
 Example: `stash connect github --repo user/repo` or `stash connect github` (prompts).
 
@@ -105,7 +109,7 @@ Shows:
 
 Three components:
 
-- **CLI** — pure UI. Parses commands, prints output. Delegates everything to Stash. Owns global config.
+- **CLI** — pure UI. Parses commands, prints output. Delegates everything to Stash. Owns global config. Uses `commander` for command/flag parsing and `@inquirer/prompts` for interactive input. Supports `--flag value` and `--flag=value` syntax. Secret fields (e.g. tokens) use masked input via `@inquirer/prompts`.
 - **Stash** — owns per-stash config, file I/O, snapshots, scanning, merge logic. Coordinates the provider, but doesn't care which provider it is.
 - **Provider** — transport only. Does not merge. Does not know about or touch local files. Knows how to talk to a specific connection. Interface implemented by specific providers (e.g. GitHub).
 
@@ -298,6 +302,8 @@ Takes two ChangeSets — returns a `FileMutation` for every file that appears in
 
 Change detection has already happened before reconcile — by the time it runs, we know exactly which files were added, modified, or deleted on each side. Reconcile applies the merge table to these change types directly.
 
+Implementation note: `deleted` arrays should be converted to Sets before the reconcile loop — path lookups happen per-file and must not be O(n).
+
 For text files that appear as `modified` or `added` on both sides, reconcile calls `mergeText()` using the snapshot from `snapshot.local/` as the three-way base.
 
 ```ts
@@ -342,7 +348,7 @@ mergeText(snapshot: string | null, local: string, remote: string): string
 ```
 
 - If snapshot exists: three-way merge (diff snapshot→local + diff snapshot→remote, apply both).
-- If no snapshot (first sync): two-way merge (diff local vs remote directly).
+- If no snapshot (first sync): two-way merge via diff-match-patch (diff local→remote, apply to local). Uses the same diff-match-patch library as three-way — not a custom line-based algorithm.
 
 ### FileState
 
@@ -359,7 +365,7 @@ type FileState =
 
 ### PushPayload
 
-Built from `FileMutation[]` — Stash filters for mutations where `remote` is `"write"` or `"delete"`. Includes the updated `snapshot.json` to push alongside file changes in the same commit. Provider just executes. Always preceded by a `fetch()`.
+Built from `FileMutation[]` — Stash filters for mutations where `remote` is `"write"` or `"delete"`. Mutations where `remote: "write"` but `source: "remote"` are skipped — the remote already has the correct content (e.g. binary conflict where remote wins). Includes the updated `snapshot.json` to push alongside file changes in the same commit. Provider just executes. Always preceded by a `fetch()`.
 
 ```ts
 interface PushPayload {
