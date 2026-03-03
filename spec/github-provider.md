@@ -8,7 +8,7 @@ Implementation of the `Provider` interface for GitHub. Uses a single GitHub repo
 
 All stash files live on the `main` branch. Stash file paths map directly to repository paths — `notes/todo.md` in the stash is `notes/todo.md` in the repo. No path translation, no namespacing.
 
-`.stash/snapshot.json` is stored in the repo alongside user files. It is the only `.stash/` file on the remote. Convention from main.md: `*.local.*` and `*.local/` are never pushed.
+`.stash/snapshot.json` is stored in the repo alongside user files. It is the only `.stash/` file on the remote. Convention from stash.md: `*.local.*` and `*.local/` are never pushed.
 
 Each `push()` creates exactly one commit. No branches, no PRs, no tags.
 
@@ -101,7 +101,7 @@ Returns a `ChangeSet` of what changed on the remote since last sync. Optimized t
 
    Checks whether raw bytes are valid UTF-8. Shared between `scan()` (local files) and `fetch()` (remote files where GitHub said `isBinary: false`). Both paths must agree on what is text vs binary — if they diverge, snapshot hashes won't match and files will ping-pong on every sync.
 
-   GitHub's `isBinary` uses null-byte detection. main.md defines binary as "not valid UTF-8". The two-step approach satisfies both: GitHub filters obvious binaries cheaply, `isValidText()` catches edge cases.
+   GitHub's `isBinary` uses null-byte detection. stash.md defines binary as "not valid UTF-8". The two-step approach satisfies both: GitHub filters obvious binaries cheaply, `isValidText()` catches edge cases.
 
 6. **Build ChangeSet** — assemble `added`, `modified`, and `deleted` from steps 3-5 and return.
 
@@ -208,7 +208,7 @@ Transient failures during push before the ref update completes are safe — noth
 
 ## Walkthrough
 
-Same scenario as main.md. Machine A edited `hello.md`, added `new.md`, deleted `image.png`. Machine B edited `hello.md`, added `photo.jpg`.
+Same scenario as stash.md. Machine A edited `hello.md`, added `new.md`, deleted `image.png`. Machine B edited `hello.md`, added `photo.jpg`.
 
 ### fetch()
 

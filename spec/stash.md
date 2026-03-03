@@ -7,41 +7,27 @@ Conflict-free synced folders. Multiple editors (humans, AI agents, scripts) read
 - Simple, small codebase.
 - End-to-end tests: init → write files → sync → pull from another machine → edit both sides → sync → verify merge.
 - GitHub provider only.
-- No daemon, no MCP, no global registry. Just directories.
+- No MCP. Just directories.
 
 ---
 
 ## Behavior
 
-### `stash`
+### `Stash.init(dir, globalConfig)`
 
-Running `stash` with no command displays help.
+Initializes `dir` as a stash. If the directory already contains files, they are included — nothing is lost or moved.
 
-### `stash init`
+Calling `Stash.init()` on a directory that is already a stash is a no-op.
 
-Initializes the current directory as a stash. If the directory already contains files, they are included — nothing is lost or moved.
+### `stash.connect(provider, fields)`
 
-Running `stash init` in a directory that is already a stash informs the user, tells them they can delete the .stash directory if they need, and does nothing.
+Connects this stash to a provider. One connection per stash per provider. Stored as a map keyed by provider name (supports multiple providers in future). CLI details (prompting, flags) in [cli.md](cli.md).
 
-### `stash setup <provider>`
-
-Configures global provider settings (e.g. auth). Provider declares required fields via its static spec. Accepts `--field value` or `--field=value` flags, or prompts interactively.
-
-Example: `stash setup github --token ghp_...` or `stash setup github` (prompts for token).
-
-### `stash connect <provider>`
-
-Connects this stash to a provider. Provider declares required connection fields via its static spec. Accepts `--field value` or `--field=value` flags, or prompts interactively. If setup has not been done for this provider, prompts for setup fields too.
-
-Example: `stash connect github --repo user/repo` or `stash connect github` (prompts).
-
-One connection per stash per provider. Stored as a map keyed by provider name (supports multiple providers in future).
-
-### `stash disconnect <provider>`
+### `stash.disconnect(provider)`
 
 Removes the connection for the given provider from this stash.
 
-### `stash sync`
+### `stash.sync()`
 
 Syncs local files with configured connections. This is the core operation.
 
@@ -81,7 +67,7 @@ If a file is unchanged on the remote, that file is not touched at all, to ensure
 
 **Single-flight:** only one sync runs at a time.
 
-### `stash status`
+### `stash.status()`
 
 Shows:
 
@@ -100,8 +86,8 @@ Shows:
 
 - No branches, no commits, no staging area.
 - No conflict markers to resolve manually.
-- No pull/push distinction — `stash sync` does both.
-- No daemon or background process required (but one could be added later to auto-sync).
+- No pull/push distinction — `sync()` does both.
+- No daemon required — `stash watch` can auto-sync in the background, but it's optional.
 
 ---
 
@@ -109,7 +95,7 @@ Shows:
 
 Three components:
 
-- **CLI** — pure UI. Parses commands, prints output. Delegates everything to Stash. Owns global config. Uses `commander` for command/flag parsing and `@inquirer/prompts` for interactive input. Supports `--flag value` and `--flag=value` syntax. Secret fields (e.g. tokens) use masked input via `@inquirer/prompts`.
+- **CLI** — pure UI. Parses commands, prints output. Delegates everything to Stash. Owns global config. See [cli.md](cli.md).
 - **Stash** — owns per-stash config, file I/O, snapshots, scanning, merge logic. Coordinates the provider, but doesn't care which provider it is.
 - **Provider** — transport only. Does not merge. Does not know about or touch local files. Knows how to talk to a specific connection. Interface implemented by specific providers (e.g. GitHub).
 
@@ -302,8 +288,6 @@ Takes two ChangeSets — returns a `FileMutation` for every file that appears in
 
 Change detection has already happened before reconcile — by the time it runs, we know exactly which files were added, modified, or deleted on each side. Reconcile applies the merge table to these change types directly.
 
-Implementation note: `deleted` arrays should be converted to Sets before the reconcile loop — path lookups happen per-file and must not be O(n).
-
 For text files that appear as `modified` or `added` on both sides, reconcile calls `mergeText()` using the snapshot from `snapshot.local/` as the three-way base.
 
 ```ts
@@ -348,7 +332,7 @@ mergeText(snapshot: string | null, local: string, remote: string): string
 ```
 
 - If snapshot exists: three-way merge (diff snapshot→local + diff snapshot→remote, apply both).
-- If no snapshot (first sync): two-way merge via diff-match-patch (diff local→remote, apply to local). Uses the same diff-match-patch library as three-way — not a custom line-based algorithm.
+- If no snapshot (first sync): two-way merge (diff local vs remote directly).
 
 ### FileState
 
@@ -365,7 +349,7 @@ type FileState =
 
 ### PushPayload
 
-Built from `FileMutation[]` — Stash filters for mutations where `remote` is `"write"` or `"delete"`. Mutations where `remote: "write"` but `source: "remote"` are skipped — the remote already has the correct content (e.g. binary conflict where remote wins). Includes the updated `snapshot.json` to push alongside file changes in the same commit. Provider just executes. Always preceded by a `fetch()`.
+Built from `FileMutation[]` — Stash filters for mutations where `remote` is `"write"` or `"delete"`. Includes the updated `snapshot.json` to push alongside file changes in the same commit. Provider just executes. Always preceded by a `fetch()`.
 
 ```ts
 interface PushPayload {
@@ -408,23 +392,6 @@ Config is split into two layers with clear ownership:
 
 Neither layer knows how the other is stored or managed. They meet at `Stash.load(dir, globalConfig)` — CLI passes global config in, Stash merges with local config internally.
 
-### Global config
-
-Location: `~/.stash/config.json`. Respects `$XDG_CONFIG_HOME` if set (`$XDG_CONFIG_HOME/stash/config.json`). Directory (`~/.stash/`) allows room for future global state (cache, logs).
-
-Managed by CLI via `readGlobalConfig()` / `writeGlobalConfig()` utility functions. Written by `stash setup <provider>`.
-
-Shape — keyed by provider name, each provider owns its section:
-```json
-{
-  "github": {
-    "token": "ghp_..."
-  }
-}
-```
-
-Fields defined by the provider's `ProviderSpec.setup`.
-
 ### Per-stash config
 
 Location: `.stash/config.local.json`. Never pushed to remote (`.local.` convention).
@@ -443,15 +410,6 @@ Shape — `connections` map keyed by provider name:
 ```
 
 Fields defined by the provider's `ProviderSpec.connect`.
-
-### How CLI instantiates Stash
-
-CLI reads global config from disk and passes it into Stash. Stash never reads global config itself.
-
-```ts
-const globalConfig = readGlobalConfig()
-const stash = await Stash.load(dir, globalConfig)
-```
 
 ### How Stash manages config
 
@@ -495,20 +453,7 @@ const provider = new GitHubProvider({
 
 Each provider defines its own config type (e.g. `GitHubConfig`). Provider receives a typed config object. It never reads or writes config files.
 
-### CLI flow for `stash setup`
-
-1. Look up provider class from registry
-2. Read `ProviderSpec.setup` fields
-3. For each field: use `--field value` flag if provided, otherwise prompt interactively (masked if `secret: true`)
-4. Write to global config under provider name
-
-### CLI flow for `stash connect`
-
-1. Look up provider class from registry
-2. Check global config for setup fields — if missing, prompt for them first (and write to global config)
-3. Read `ProviderSpec.connect` fields
-4. For each field: use `--field value` flag if provided, otherwise prompt interactively
-5. Call `stash.connect(providerName, fields)` — Stash writes to `.stash/config.local.json`
+CLI flows for `stash setup` and `stash connect` are in [cli.md](cli.md).
 
 ---
 
@@ -529,7 +474,7 @@ Since the last sync:
 - **Machine A** (local): edited `hello.md` to `"hello brave world"`, added `new.md` with `"draft"`, deleted `image.png`.
 - **Machine B** (remote): edited `hello.md` to `"hello world!"`, added `photo.jpg`.
 
-Machine A runs `stash sync`.
+Machine A calls `stash.sync()`.
 
 ### Step 1: Scan local
 

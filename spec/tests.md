@@ -4,8 +4,8 @@
 
 Three layers of testing:
 
-- **Unit & integration tests** — specified in the relevant spec files (`main.md`, `github-provider.md`). Cover internal functions (`scan()`, `reconcile()`, `mergeText()`, `computeSnapshot()`, etc.) and `Stash.sync()` with mock/fake providers.
-- **End-to-end tests** — specified here. Cover all user-facing behavior from `main.md`. Real filesystem, real GitHub API, real repos.
+- **Unit & integration tests** — specified in the relevant spec files (`stash.md`, `github-provider.md`). Cover internal functions (`scan()`, `reconcile()`, `mergeText()`, `computeSnapshot()`, etc.) and `Stash.sync()` with mock/fake providers.
+- **End-to-end tests** — specified here. Cover all user-facing behavior from `stash.md`. Real filesystem, real GitHub API, real repos.
 
 The rest of the codebase should have thorough unit and integration test coverage. Each spec file is responsible for defining the tests relevant to its domain.
 
