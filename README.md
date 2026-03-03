@@ -1,91 +1,43 @@
 # Stash
 
-Conflict-free synced folders.
+Conflict-free synced folders. Multiple people and machines edit the same files — changes merge automatically, conflict-free.
 
-## How it works
+## Quick start
 
-Stash tracks a directory of files and syncs them to a remote provider (currently only GitHub implemented). When you run `stash sync`:
-
-1. Local changes since the last sync are detected.
-2. Remote changes are fetched.
-3. Both sides are merged (concurrent text edits in different regions combine cleanly, and overlapping edits preserve both versions)
-4. The merged result is written to disk and pushed to the remote.
-
-Binary files use a last-modified-wins strategy.
-
-## Getting started
-
-You'll need Node.js with native TypeScript support (v22.6+).
-
-### Install
+You'll need Node.js v22.6+ (native TypeScript support). From the `code/` directory:
 
 ```
-cd code
-npm install
-npm link
+npm install && npm link
 ```
 
-This makes the `stash` command available globally.
-
-### Set up GitHub
-
-For GitHub sync, you'll need a GitHub personal access token, with read/write access to your repos. Simply run this from anywhere & follow the prompts:
+Then set up a stash and connect it to a GitHub repo:
 
 ```
-stash setup github
-```
-
-### Initialize a stash
-
-In the directory you want to sync, run:
-
-```
-stash init
-```
-
-### Connect to a GitHub repo
-
-```
+stash setup github          # one-time: provide your GitHub token
+stash init                   # in the directory you want to sync
 stash connect github --repo user/repo
 ```
 
-The repo is used as the remote storage backend.
-
-### Sync
+Now sync:
 
 ```
 stash sync
 ```
 
-That's it. Run this whenever you want to push local changes and pull remote changes. There's no separate push or pull — sync does both.
+That's it. Local changes are pushed, remote changes are pulled, concurrent edits are merged. There's no separate push or pull — sync does both.
 
-### Check status
+Run `stash status` to see what's changed since the last sync, and `stash disconnect github` to remove the connection.
 
-```
-stash status
-```
+## How merging works
 
-Shows configured connections and files changed since the last sync.
+The merge algorithm is the same as the one used by Obsidian Sync.
 
-### Disconnect
+Text files are merged automatically using three-way merge. Edits in different regions combine cleanly. Overlapping edits preserve both versions — no data is silently lost.
 
-```
-stash disconnect github
-```
+Binary files use last-modified-wins.
 
 ## File tracking
 
-- All files in the stash directory are tracked automatically.
-- Dotfiles (files/directories starting with `.`) are ignored.
-- Symlinks are ignored.
+All files in the stash directory are tracked automatically.
 
-## Commands
-
-| Command | Description |
-|---|---|
-| `stash init` | Initialize current directory as a stash |
-| `stash setup <provider>` | Configure global provider settings (e.g. auth) |
-| `stash connect <provider>` | Connect this stash to a provider |
-| `stash disconnect <provider>` | Remove a provider connection |
-| `stash sync` | Sync local files with the remote |
-| `stash status` | Show connections and local changes |
+Dotfiles, dot-directories, and symlinks are ignored.
