@@ -1,20 +1,35 @@
 {
-  "name": "stash",
+  "name": "@telepath-computer/stash",
   "version": "1.0.0",
-  "description": "Stash implementation",
+  "description": "Conflict-free synced folders",
   "type": "module",
-  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "bin": {
-    "stash": "./src/cli.ts"
+    "stash": "dist/cli.js"
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
     "stash": "node ./src/cli.ts",
     "test": "node --test tests/unit/*.test.ts tests/integration/*.test.ts",
     "test:e2e": "node --test tests/e2e/*.test.ts",
     "test:all": "npm test && npm run test:e2e"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "sync",
+    "files",
+    "merge",
+    "conflict-free"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/telepath-computer/stash.git",
+    "directory": "code"
+  },
   "license": "ISC",
   "dependencies": {
     "@inquirer/prompts": "^8.3.0",
@@ -23,5 +38,9 @@
     "@rupertsworld/emitter": "^0.1.0",
     "commander": "^14.0.3",
     "diff-match-patch": "^1.0.5"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.3",
+    "typescript": "^5.9.3"
   }
 }

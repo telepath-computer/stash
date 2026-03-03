@@ -444,7 +444,7 @@ export class Stash extends Emitter<StashEvents> {
           path,
           disk: "write",
           remote: "write",
-          content: remoteState.content,
+          content: (remoteState as { type: "text"; content: string }).content,
         });
       }
     }
@@ -567,7 +567,7 @@ export class Stash extends Emitter<StashEvents> {
     mutations: FileMutation[],
     snapshot: Record<string, SnapshotEntry>,
   ): Promise<PushPayload> {
-    const files = new Map<string, string | (() => NodeJS.ReadableStream)>();
+    const files = new Map<string, string | (() => import("node:stream").Readable)>();
     const deletions: string[] = [];
 
     for (const mutation of mutations) {

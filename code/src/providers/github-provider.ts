@@ -254,7 +254,7 @@ export class GitHubProvider implements Provider {
 
     const blobShas = new Map<string, string>();
     const binaryWrites = [...payload.files.entries()].filter(
-      ([, value]) => typeof value !== "string",
+      (entry): entry is [string, () => Readable] => typeof entry[1] !== "string",
     );
 
     await Promise.all(
