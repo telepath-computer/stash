@@ -57,9 +57,13 @@ All files in the stash directory are tracked automatically. Dotfiles, dot-direct
 
 No. If you point stash at a directory that already has files, or connect it to a repo that already has content, stash merges both sides on first sync. Nothing is deleted. If both local and remote have the same file with different content, the changes are merged automatically. The merged result becomes the baseline for future syncs.
 
-**Can I use stash alongside normal git?**
+**Can I use the same repo with both stash and git?**
 
-Yes. Stash creates normal git commits (with the message `"stash: sync"`) via the GitHub API. They show up in `git log` like any other commit. Your colleagues can continue using `git push`, `git pull`, branches, and PRs on the same repo — stash will pick up their changes on the next sync and merge them in. If a git push and a stash sync happen at the same time, stash detects the conflict, re-fetches, re-merges, and retries automatically.
+Yes, but not on the same machine. Stash syncs the working tree directly to `main` via the GitHub API — it doesn't use or know about local git state. If you also have a `.git` directory locally, switching branches will cause stash to see all the changed files and sync them to `main`. Don't use both in the same directory.
+
+On the remote side, the repo is a normal git repo. Other people can clone it, push to it, make branches, open PRs — all the usual git workflows. Stash commits are regular git commits, so they interleave cleanly. If a git push and a stash sync happen at the same time, stash detects the conflict, re-fetches, re-merges, and retries automatically.
+
+In short: each machine should be either a stash or a git checkout, not both.
 
 **Does stash use branches or PRs?**
 
