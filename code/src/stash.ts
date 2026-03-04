@@ -58,7 +58,8 @@ function sortPaths(paths: Iterable<string>): string[] {
 }
 
 const STALE_SYNC_LOCK_MS = 10 * 60 * 1000;
-const SYNC_RETRY_LIMIT = 3;
+const SYNC_RETRY_LIMIT = 5;
+const NON_FILE_HASH = "__non-file__";
 
 export class Stash extends Emitter<StashEvents> {
   private readonly dir: string;
@@ -165,8 +166,13 @@ export class Stash extends Emitter<StashEvents> {
           const remoteChanges = await provider.fetch(localSnapshot);
           const mutations = this.reconcile(localChanges, remoteChanges);
           const nextSnapshot = this.computeSnapshot(localSnapshot, mutations);
+          const expectedHashes = this.buildExpectedHashes(
+            localChanges,
+            localSnapshot,
+            mutations,
+          );
 
-          if (this.hasLocalDrift(localChanges)) {
+          if (this.hasAnyPathDrift(expectedHashes)) {
             lastRetryError = new Error("local files changed during sync");
             if (attempt === SYNC_RETRY_LIMIT) {
               throw lastRetryError;
@@ -192,16 +198,13 @@ export class Stash extends Emitter<StashEvents> {
             }
           }
 
-          if (this.hasDiskWriteMutations(mutations) && this.hasLocalDrift(localChanges)) {
-            lastRetryError = new Error("local files changed during sync");
-            if (attempt === SYNC_RETRY_LIMIT) {
-              throw lastRetryError;
-            }
-            continue;
-          }
-
-          await this.apply(mutations, provider);
-          await this.saveSnapshot(nextSnapshot, mutations);
+          const skippedWritePaths = await this.apply(mutations, provider, expectedHashes);
+          const localSnapshotToSave = this.rollBackSkippedSnapshotEntries(
+            nextSnapshot,
+            localSnapshot,
+            skippedWritePaths,
+          );
+          await this.saveSnapshot(localSnapshotToSave, mutations, skippedWritePaths);
           completed = true;
           break;
         }
@@ -535,13 +538,27 @@ export class Stash extends Emitter<StashEvents> {
     return next;
   }
 
-  private async apply(mutations: FileMutation[], provider: Provider): Promise<void> {
+  private async apply(
+    mutations: FileMutation[],
+    provider: Provider,
+    expectedHashes: Map<string, string | null>,
+  ): Promise<Set<string>> {
+    const skippedWritePaths = new Set<string>();
     for (const mutation of mutations) {
+      let diskAction = mutation.disk;
+      if (diskAction === "write") {
+        const expectedHash = expectedHashes.get(mutation.path) ?? null;
+        if (this.pathDrifted(mutation.path, expectedHash)) {
+          diskAction = "skip";
+          skippedWritePaths.add(mutation.path);
+        }
+      }
+
       const target = this.abs(mutation.path);
 
-      if (mutation.disk === "delete") {
+      if (diskAction === "delete") {
         this.safeDelete(target);
-      } else if (mutation.disk === "write") {
+      } else if (diskAction === "write") {
         await mkdir(dirname(target), { recursive: true });
 
         if (mutation.content !== undefined) {
@@ -553,18 +570,27 @@ export class Stash extends Emitter<StashEvents> {
         }
       }
 
-      this.emit("mutation", mutation);
+      if (diskAction === mutation.disk) {
+        this.emit("mutation", mutation);
+      } else {
+        this.emit("mutation", { ...mutation, disk: diskAction });
+      }
     }
+    return skippedWritePaths;
   }
 
   private async saveSnapshot(
     snapshot: Record<string, SnapshotEntry>,
     mutations: FileMutation[],
+    skippedWritePaths: Set<string> = new Set<string>(),
   ): Promise<void> {
     await mkdir(this.snapshotLocalDir(), { recursive: true });
     await writeFile(this.snapshotPath(), JSON.stringify(snapshot, null, 2), "utf8");
 
     for (const mutation of mutations) {
+      if (skippedWritePaths.has(mutation.path)) {
+        continue;
+      }
       if (mutation.content !== undefined) {
         const destination = join(this.snapshotLocalDir(), mutation.path);
         await mkdir(dirname(destination), { recursive: true });
@@ -582,6 +608,25 @@ export class Stash extends Emitter<StashEvents> {
         this.safeDelete(join(this.snapshotLocalDir(), mutation.path));
       }
     }
+  }
+
+  private rollBackSkippedSnapshotEntries(
+    nextSnapshot: Record<string, SnapshotEntry>,
+    previousSnapshot: Record<string, SnapshotEntry>,
+    skippedWritePaths: Set<string>,
+  ): Record<string, SnapshotEntry> {
+    if (skippedWritePaths.size === 0) {
+      return nextSnapshot;
+    }
+    const localSnapshot = cloneSnapshot(nextSnapshot);
+    for (const path of skippedWritePaths) {
+      if (previousSnapshot[path]) {
+        localSnapshot[path] = { ...previousSnapshot[path] };
+      } else {
+        delete localSnapshot[path];
+      }
+    }
+    return localSnapshot;
   }
 
   private async buildPushPayload(
@@ -616,60 +661,62 @@ export class Stash extends Emitter<StashEvents> {
     return { files, deletions, snapshot };
   }
 
-  private hasDiskWriteMutations(mutations: FileMutation[]): boolean {
-    return mutations.some((mutation) => mutation.disk === "write");
-  }
-
-  private hasLocalDrift(expected: ChangeSet): boolean {
-    const current = this.scan();
-    return !this.changeSetsEqual(expected, current);
-  }
-
-  private changeSetsEqual(a: ChangeSet, b: ChangeSet): boolean {
-    if (!this.fileStateMapsEqual(a.added, b.added)) {
-      return false;
-    }
-    if (!this.fileStateMapsEqual(a.modified, b.modified)) {
-      return false;
-    }
-    if (a.deleted.length !== b.deleted.length) {
-      return false;
-    }
-    for (let i = 0; i < a.deleted.length; i += 1) {
-      if (a.deleted[i] !== b.deleted[i]) {
-        return false;
+  private hasAnyPathDrift(expectedHashes: Map<string, string | null>): boolean {
+    for (const [path, expectedHash] of expectedHashes) {
+      if (this.pathDrifted(path, expectedHash)) {
+        return true;
       }
-    }
-    return true;
-  }
-
-  private fileStateMapsEqual(
-    left: Map<string, FileState>,
-    right: Map<string, FileState>,
-  ): boolean {
-    if (left.size !== right.size) {
-      return false;
-    }
-    for (const [path, leftState] of left) {
-      const rightState = right.get(path);
-      if (!rightState || !this.fileStatesEqual(leftState, rightState)) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  private fileStatesEqual(left: FileState, right: FileState): boolean {
-    if (left.type !== right.type) {
-      return false;
-    }
-    if (left.type === "text" && right.type === "text") {
-      return left.content === right.content;
-    }
-    if (left.type === "binary" && right.type === "binary") {
-      return left.hash === right.hash && left.modified === right.modified;
     }
     return false;
+  }
+
+  private pathDrifted(path: string, expectedHash: string | null): boolean {
+    return this.currentHash(path) !== expectedHash;
+  }
+
+  private currentHash(path: string): string | null {
+    const absPath = this.abs(path);
+    if (!existsSync(absPath)) {
+      return null;
+    }
+    const stat = lstatSync(absPath);
+    if (!stat.isFile()) {
+      return NON_FILE_HASH;
+    }
+    return hashBuffer(readFileSync(absPath));
+  }
+
+  private buildExpectedHashes(
+    localChanges: ChangeSet,
+    localSnapshot: Record<string, SnapshotEntry>,
+    mutations: FileMutation[],
+  ): Map<string, string | null> {
+    const expected = new Map<string, string | null>();
+    const localDeleted = new Set(localChanges.deleted);
+
+    for (const mutation of mutations) {
+      if (expected.has(mutation.path)) {
+        continue;
+      }
+      const path = mutation.path;
+      if (localDeleted.has(path)) {
+        expected.set(path, null);
+        continue;
+      }
+      const localState = localChanges.added.get(path) ?? localChanges.modified.get(path) ?? null;
+      if (localState?.type === "text") {
+        expected.set(path, hashText(localState.content));
+        continue;
+      }
+      if (localState?.type === "binary") {
+        expected.set(path, localState.hash);
+        continue;
+      }
+      const snapshotEntry = localSnapshot[path];
+      expected.set(path, snapshotEntry ? snapshotEntry.hash : null);
+    }
+
+    return expected;
   }
 
   private readSnapshot(): Record<string, SnapshotEntry> {

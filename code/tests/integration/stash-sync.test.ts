@@ -151,7 +151,7 @@ test("sync: max retries exceeded throws", async () => {
   fake.alwaysConflict = true;
 
   await assert.rejects(stash.sync(), PushConflictError);
-  assert.equal(fake.pushCalls, 3);
+  assert.equal(fake.pushCalls, 5);
 });
 
 test("sync: no connection is a no-op", async () => {
@@ -327,9 +327,13 @@ test("sync: preserves local edits made after push but before apply (post-push ra
   gate.resolve();
   await syncPromise;
 
-  const final = await readFile(join(dir, "doc.md"), "utf8");
-  assert.equal(final.includes("ALICE_LATE"), true);
-  assert.equal(final.includes("BOB_END"), true);
+  const immediate = await readFile(join(dir, "doc.md"), "utf8");
+  assert.equal(immediate.includes("ALICE_LATE"), true);
+
+  await stash.sync();
+  const converged = await readFile(join(dir, "doc.md"), "utf8");
+  assert.equal(converged.includes("ALICE_LATE"), true);
+  assert.equal(converged.includes("BOB_END"), true);
 });
 
 test("sync: drift retries are bounded and failed cycle does not apply/save", async () => {
@@ -355,10 +359,10 @@ test("sync: drift retries are bounded and failed cycle does not apply/save", asy
   fake.fetchCalls = 0;
   fake.pushCalls = 0;
 
-  (stash as any).hasLocalDrift = () => true;
+  (stash as any).hasAnyPathDrift = () => true;
 
   await assert.rejects(stash.sync(), /local files changed during sync/i);
-  assert.equal(fake.fetchCalls, 3);
+  assert.equal(fake.fetchCalls, 5);
   assert.equal(fake.pushCalls, 0);
   assert.equal(await readFile(join(dir, "doc.md"), "utf8"), aliceEarly);
 

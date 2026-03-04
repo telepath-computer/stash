@@ -441,17 +441,19 @@ This validates the pre-push race window (`scan()` → `push()`) and requires syn
 - Start sync and pause provider push after remote write succeeds, before local apply
 - While sync is paused, local changes again to prepend "ALICE_LATE"
 - Resume sync
-- Verify final local doc.md contains "ALICE_LATE" and "BOB_END"
+- Verify final local doc.md contains "ALICE_LATE" (not overwritten)
+- Run a subsequent sync cycle
+- Verify final local doc.md contains both "ALICE_LATE" and "BOB_END"
 ```
 
-This validates the post-push race window (`push()` → `apply()`) and requires drift detection before local writes.
+This validates the post-push race window (`push()` → `apply()`) and requires skip-on-drift (no post-push restart), with convergence on a later sync.
 
 #### 34. Push conflict retries are bounded
 
 ```
 - Configure provider/test harness to force PushConflictError on every push attempt
 - Run sync
-- Verify sync fails after exactly 3 attempts (bounded retry)
+- Verify sync fails after exactly 5 attempts (bounded retry)
 - Verify no additional push attempts occur after failure
 ```
 
@@ -461,9 +463,9 @@ This validates retry bounds for remote-ref races and prevents infinite conflict 
 
 ```
 - Configure provider/test harness to force drift detection on every cycle
-  (either pre-push drift or post-push/pre-apply drift)
+  (pre-push drift)
 - Run sync
-- Verify sync fails after exactly 3 attempts
+- Verify sync fails after exactly 5 attempts
 - Verify no unbounded restart loop occurs
 - Verify the failed cycle does not proceed to apply/save after terminal failure
 ```

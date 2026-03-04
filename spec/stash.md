@@ -200,7 +200,7 @@ class SyncLockError extends Error {}
 - Another sync is already running in this process
 - `.stash/sync.lock` is held by another process (and is not reclaimable as stale)
 
-Retry bound: sync uses a shared maximum of **3 attempts** for restart-worthy races (`PushConflictError` and drift restarts).
+Retry bound: sync uses a shared maximum of **5 attempts** for restart-worthy races (`PushConflictError` and pre-push drift restarts).
 Failure contract: when that bound is exceeded, `sync()` throws the last error and stops the cycle (no further push/apply/save in that failed attempt).
 
 `sync()` flow:
@@ -209,18 +209,18 @@ Failure contract: when that bound is exceeded, `sync()` throws the last error an
 2. **Fetch remote**: `provider.fetch(localSnapshot)` → remote `ChangeSet`
 3. **Reconcile**: `reconcile(local, remote)` → `FileMutation[]`
 4. **Compute snapshot**: `computeSnapshot(oldSnapshot, mutations)` → new `snapshot.json` in memory. Must happen before push because the new snapshot is included in the push payload.
-5. **Pre-push drift check**: re-scan and compare relevant paths against the local state used for reconcile. If any path drifted since step 1, restart from step 1 (max 3 attempts).
+5. **Pre-push drift check**: re-read only mutation-target paths (targeted hash checks, not a full directory scan). If any target path drifted since step 1, restart from step 1 (max 5 attempts).
 6. **Push to remote**: build `PushPayload` from mutations + new `snapshot.json`, call `provider.push(payload)`. Skip if mutations array is empty — nothing changed, nothing to commit. On `PushConflictError` → retry from step 2 with fresh remote data.
-7. **Pre-apply drift check**: before writing each `disk: "write"` mutation, verify the local file still matches the state used for reconcile. If drift is detected, restart from step 1 instead of overwriting with stale content (max 3 attempts).
+7. **Pre-apply drift check**: before writing each `disk: "write"` mutation, verify that path still matches the state used for reconcile. If drift is detected, skip that local write (do not overwrite) and continue the cycle.
 8. **Apply to disk**: `apply(mutations, provider)` — write/delete files, emit mutation events. For binary files where `source: "remote"`, calls `provider.get(path)` and pipes to disk.
 9. **Save snapshots**: `saveSnapshot(snapshot, mutations)` — write `snapshot.json` + text files to `snapshot.local/`
 10. **Release sync lock**: clear in-process flag and delete `.stash/sync.lock` in `finally`
 
 Push happens before local disk writes. If push fails, no local state has been modified — safe to retry or abort. If push succeeds but local writes fail (unlikely — disk full, permissions), next sync self-heals: remote has the correct state, stale local snapshot triggers a re-pull.
 
-Race handling: local files may change while sync is in flight. The sync algorithm must detect drift both before push and before apply. On drift, it restarts the cycle with a fresh local scan so late edits are merged instead of overwritten. This restart loop is bounded to 3 attempts (shared with push-conflict retries).
+Race handling: local files may change while sync is in flight. Drift checks are path-targeted (per mutation path), not full rescans. Pre-push drift restarts the cycle with a fresh scan (bounded to 5 attempts). Post-push drift does not restart; drifted local writes are skipped so newer local edits are preserved and converge on a later sync.
 
-Snapshot guarantee: `snapshot.json` and `snapshot.local/` represent the state that was synchronized by that sync cycle. They are not a lock on future disk state — files may change immediately after apply/save, and those newer local edits are picked up on the next sync.
+Snapshot guarantee: `snapshot.json` and `snapshot.local/` represent the synchronized state for that cycle, except paths skipped by post-push drift protection. For skipped paths, local snapshot entries intentionally remain at the prior base so the next sync treats both sides as changed and re-merges. They are not a lock on future disk state — files may change immediately after apply/save, and those newer local edits are picked up on the next sync.
 
 Provider is constructed once per `sync()` call as a local variable. It is stateful within a sync cycle — `fetch()` stores the remote HEAD commit SHA internally, `push()` uses it as the parent commit for conflict detection. Not stored as a Stash instance property — each sync starts fresh.
 
@@ -642,11 +642,11 @@ PushPayload:
     (the snapshot.json computed in step 4)
 ```
 
-Before `provider.push(payload)`, sync re-checks that files used for reconcile still match the scanned local state. If not, restart from step 1. If push fails due to `PushConflictError` (another machine synced), retry from step 2 with fresh remote data.
+Before `provider.push(payload)`, sync re-checks only mutation-target paths against the scanned local state (targeted hash reads). If any drifted, restart from step 1. If push fails due to `PushConflictError` (another machine synced), retry from step 2 with fresh remote data.
 
 ### Step 6: Apply to disk
 
-Before writing each `disk: "write"` mutation, sync re-checks the target path for drift. If drift is found, sync restarts from step 1 and recomputes mutations. Otherwise `apply(mutations, provider)`:
+Before writing each `disk: "write"` mutation, sync re-checks that target path for drift. If drift is found, skip that local write (no overwrite, no restart). Otherwise `apply(mutations, provider)`:
 
 - `hello.md`: write `"hello brave world!"` to disk.
 - `photo.jpg`: binary, `source: "remote"` → call `provider.get("photo.jpg")`, pipe stream to disk.
@@ -1091,13 +1091,14 @@ Integration tests use `FakeProvider` to test `sync()` end-to-end without network
     - Start sync() with a local edit and a remote edit to the same file
     - Block provider.push() after remote write succeeds, before apply()
     - Change local file while sync is paused
-    - Unblock sync and verify final file contains latest local edit + remote edit
+    - Unblock sync and verify local file keeps the newer local edit (no overwrite)
+    - Verify convergence with remote merge on a subsequent sync cycle
 
 14. Drift retries are bounded
-    - Force repeated drift detection on each cycle (pre-push and/or pre-apply)
-    - sync() retries restart loop up to exactly 3 attempts
+    - Force repeated pre-push drift detection on each cycle
+    - sync() retries restart loop up to exactly 5 attempts
     - Verify sync() throws once limit is exceeded
-    - Verify retry count is exactly 3 (no unbounded loop)
+    - Verify retry count is exactly 5 (no unbounded loop)
     - Verify failed cycle does not continue to apply/save after terminal failure
 ```
 
