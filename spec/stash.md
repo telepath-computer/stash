@@ -200,20 +200,27 @@ class SyncLockError extends Error {}
 - Another sync is already running in this process
 - `.stash/sync.lock` is held by another process (and is not reclaimable as stale)
 
+Retry bound: sync uses a shared maximum of **5 attempts** for restart-worthy races (`PushConflictError` and pre-push drift restarts).
+Failure contract: when that bound is exceeded, `sync()` throws the last error and stops the cycle (no further push/apply/save in that failed attempt).
+
 `sync()` flow:
 0. **Acquire sync lock**: in-process `syncInFlight` check + `.stash/sync.lock` file lock
 1. **Scan local**: `scan()` → local `ChangeSet`
 2. **Fetch remote**: `provider.fetch(localSnapshot)` → remote `ChangeSet`
 3. **Reconcile**: `reconcile(local, remote)` → `FileMutation[]`
 4. **Compute snapshot**: `computeSnapshot(oldSnapshot, mutations)` → new `snapshot.json` in memory. Must happen before push because the new snapshot is included in the push payload.
-5. **Push to remote**: build `PushPayload` from mutations + new `snapshot.json`, call `provider.push(payload)`. Skip if mutations array is empty — nothing changed, nothing to commit. On `PushConflictError` → retry from step 2 (reuse local ChangeSet, max 3 retries).
-6. **Apply to disk**: `apply(mutations, provider)` — write/delete files, emit mutation events. For binary files where `source: "remote"`, calls `provider.get(path)` and pipes to disk.
-7. **Save snapshots**: `saveSnapshot(snapshot, mutations)` — write `snapshot.json` + text files to `snapshot.local/`
-8. **Release sync lock**: clear in-process flag and delete `.stash/sync.lock` in `finally`
+5. **Pre-push drift check**: re-read only mutation-target paths (targeted hash checks, not a full directory scan). If any target path drifted since step 1, restart from step 1 (max 5 attempts).
+6. **Push to remote**: build `PushPayload` from mutations + new `snapshot.json`, call `provider.push(payload)`. Skip if mutations array is empty — nothing changed, nothing to commit. On `PushConflictError` → retry from step 2 with fresh remote data.
+7. **Pre-apply drift check**: before writing each `disk: "write"` mutation, verify that path still matches the state used for reconcile. If drift is detected, skip that local write (do not overwrite) and continue the cycle.
+8. **Apply to disk**: `apply(mutations, provider)` — write/delete files, emit mutation events. For binary files where `source: "remote"`, calls `provider.get(path)` and pipes to disk.
+9. **Save snapshots**: `saveSnapshot(snapshot, mutations)` — write `snapshot.json` + text files to `snapshot.local/`
+10. **Release sync lock**: clear in-process flag and delete `.stash/sync.lock` in `finally`
 
 Push happens before local disk writes. If push fails, no local state has been modified — safe to retry or abort. If push succeeds but local writes fail (unlikely — disk full, permissions), next sync self-heals: remote has the correct state, stale local snapshot triggers a re-pull.
 
-The retry loop reuses the original local ChangeSet because disk hasn't changed during sync (single-flight guarantee). Only the remote ChangeSet is re-fetched, since the remote may have moved.
+Race handling: local files may change while sync is in flight. Drift checks are path-targeted (per mutation path), not full rescans. Pre-push drift restarts the cycle with a fresh scan (bounded to 5 attempts). Post-push drift does not restart; drifted local writes are skipped so newer local edits are preserved and converge on a later sync.
+
+Snapshot guarantee: `snapshot.json` and `snapshot.local/` represent the synchronized state for that cycle, except paths skipped by post-push drift protection. For skipped paths, local snapshot entries intentionally remain at the prior base so the next sync treats both sides as changed and re-merges. They are not a lock on future disk state — files may change immediately after apply/save, and those newer local edits are picked up on the next sync.
 
 Provider is constructed once per `sync()` call as a local variable. It is stateful within a sync cycle — `fetch()` stores the remote HEAD commit SHA internally, `push()` uses it as the parent commit for conflict detection. Not stored as a Stash instance property — each sync starts fresh.
 
@@ -635,11 +642,11 @@ PushPayload:
     (the snapshot.json computed in step 4)
 ```
 
-`provider.push(payload)` sends this to GitHub. If push fails due to `PushConflictError` (another machine synced), retry from step 2 with fresh remote data (reuse local ChangeSet).
+Before `provider.push(payload)`, sync re-checks only mutation-target paths against the scanned local state (targeted hash reads). If any drifted, restart from step 1. If push fails due to `PushConflictError` (another machine synced), retry from step 2 with fresh remote data.
 
 ### Step 6: Apply to disk
 
-`apply(mutations, provider)`:
+Before writing each `disk: "write"` mutation, sync re-checks that target path for drift. If drift is found, skip that local write (no overwrite, no restart). Otherwise `apply(mutations, provider)`:
 
 - `hello.md`: write `"hello brave world!"` to disk.
 - `photo.jpg`: binary, `source: "remote"` → call `provider.get("photo.jpg")`, pipe stream to disk.
@@ -1051,7 +1058,8 @@ Integration tests use `FakeProvider` to test `sync()` end-to-end without network
 
 7. Max retries exceeded
    - Configure FakeProvider to always throw PushConflictError
-   - sync() → throws after 3 retries
+   - sync() → throws after 5 retries
+   - Verify push call count is exactly 5 (bounded retry)
 
 8. No connection — sync is a no-op
    - makeStash with no connection
