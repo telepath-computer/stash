@@ -273,6 +273,8 @@ If filesystem events arrive while a sync is running, they are queued. After that
 
 An initial sync runs immediately on startup.
 
+Retry ownership policy: `sync()` owns all internal retry/restart behavior (push-conflict retries and drift restarts). Watch does not add extra retry loops; it only schedules the next `sync()` via normal debounce/poll rules after the current call resolves or fails.
+
 ### Output
 
 A static header is printed once (dim):
@@ -459,4 +461,3 @@ Unit tests for CLI presentation and watch orchestration modules.
    - Call error()
    - Verify stopSpinner called, no print
 ```
-

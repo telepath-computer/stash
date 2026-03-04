@@ -415,3 +415,59 @@ The end-to-end version of conflict resolution: after both sides make various cha
 - Verify remote does not contain .stash/snapshot.local/
 - Verify remote DOES contain .stash/snapshot.json (the one managed file)
 ```
+
+### Sync — In-Flight Edit Races
+
+#### 32. Preserve local edits made after scan but before push
+
+```
+- Baseline: doc.md ("line1\nline2\nline3\n")
+- Remote (Bob): doc.md changed to append "BOB_END"
+- Local (Alice): doc.md changed to prepend "ALICE_EARLY"
+- Start sync and pause provider fetch so scan has completed
+- While sync is paused, local changes again to prepend "ALICE_LATE"
+- Resume sync
+- Verify final local doc.md contains "ALICE_LATE" and "BOB_END"
+```
+
+This validates the pre-push race window (`scan()` → `push()`) and requires sync restart on drift.
+
+#### 33. Preserve local edits made after push but before apply
+
+```
+- Baseline: doc.md ("line1\nline2\nline3\n")
+- Remote (Bob): doc.md changed to append "BOB_END"
+- Local (Alice): doc.md changed to prepend "ALICE_EARLY"
+- Start sync and pause provider push after remote write succeeds, before local apply
+- While sync is paused, local changes again to prepend "ALICE_LATE"
+- Resume sync
+- Verify final local doc.md contains "ALICE_LATE" (not overwritten)
+- Run a subsequent sync cycle
+- Verify final local doc.md contains both "ALICE_LATE" and "BOB_END"
+```
+
+This validates the post-push race window (`push()` → `apply()`) and requires skip-on-drift (no post-push restart), with convergence on a later sync.
+
+#### 34. Push conflict retries are bounded
+
+```
+- Configure provider/test harness to force PushConflictError on every push attempt
+- Run sync
+- Verify sync fails after exactly 5 attempts (bounded retry)
+- Verify no additional push attempts occur after failure
+```
+
+This validates retry bounds for remote-ref races and prevents infinite conflict loops.
+
+#### 35. Drift-restart retries are bounded
+
+```
+- Configure provider/test harness to force drift detection on every cycle
+  (pre-push drift)
+- Run sync
+- Verify sync fails after exactly 5 attempts
+- Verify no unbounded restart loop occurs
+- Verify the failed cycle does not proceed to apply/save after terminal failure
+```
+
+This validates retry bounds for local in-flight edits under sustained churn.
