@@ -222,6 +222,7 @@ test("sync: first sync with identical content on both sides skips file writes", 
   const lastPush = fake.pushLog.at(-1);
   assert.ok(lastPush, "push should have happened (snapshot needs to reach remote)");
   assert.equal(lastPush.files.size, 0, "no file content should be pushed");
+  assert.deepEqual(lastPush.deletions, [], "no deletions should be pushed");
 
   assert.equal(await readFile(join(dir, "hello.md"), "utf8"), "hello");
   assert.equal(await readFile(join(dir, "notes/todo.md"), "utf8"), "buy milk");
@@ -229,8 +230,14 @@ test("sync: first sync with identical content on both sides skips file writes", 
   const localSnapshot = JSON.parse(
     await readFile(join(dir, ".stash", "snapshot.json"), "utf8"),
   );
-  assert.equal(typeof localSnapshot["hello.md"]?.hash, "string");
-  assert.equal(typeof localSnapshot["notes/todo.md"]?.hash, "string");
+  assert.equal(
+    localSnapshot["hello.md"]?.hash,
+    hashBuffer(Buffer.from("hello", "utf8")),
+  );
+  assert.equal(
+    localSnapshot["notes/todo.md"]?.hash,
+    hashBuffer(Buffer.from("buy milk", "utf8")),
+  );
 
   assert.equal(
     await readFile(join(dir, ".stash", "snapshot.local", "hello.md"), "utf8"),
@@ -262,6 +269,7 @@ test("sync: skip/skip mutations with changed snapshot still pushes snapshot", as
   const lastPush = fake.pushLog.at(-1);
   assert.ok(lastPush, "push should happen because snapshot changed");
   assert.equal(lastPush.files.size, 0, "no file content should be pushed");
+  assert.deepEqual(lastPush.deletions, [], "no deletions should be pushed");
 
   const localSnapshot = JSON.parse(
     await readFile(join(dir, ".stash", "snapshot.json"), "utf8"),
