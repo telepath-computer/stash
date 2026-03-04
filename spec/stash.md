@@ -1058,8 +1058,8 @@ Integration tests use `FakeProvider` to test `sync()` end-to-end without network
 
 7. Max retries exceeded
    - Configure FakeProvider to always throw PushConflictError
-   - sync() → throws after 3 retries
-   - Verify push call count is exactly 3 (bounded retry)
+   - sync() → throws after 5 retries
+   - Verify push call count is exactly 5 (bounded retry)
 
 8. No connection — sync is a no-op
    - makeStash with no connection

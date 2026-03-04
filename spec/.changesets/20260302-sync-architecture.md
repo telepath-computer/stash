@@ -16,7 +16,9 @@ With the introduction of `snapshot.json` (a manifest of SHA-256 hashes stored bo
 
 **Sync flow reordered.** Push now happens before local disk writes. This ensures that if push fails (e.g. ref conflict from another machine), no local state has been modified. The new `snapshot.json` is computed in memory and included in the push commit.
 
-**Retry logic added.** If the remote ref has moved between fetch and push (another machine synced), the provider throws `PushConflictError`. Stash catches it and retries from fetch with fresh remote data, reusing the original local ChangeSet (disk hasn't changed — single-flight guarantee). Max 3 retries.
+**Retry logic updated.** `sync()` now uses a shared retry bound of 5 attempts across restart-worthy races. On pre-push path drift, the cycle restarts from a fresh local scan. On `PushConflictError`, the cycle retries with fresh remote data. This keeps retries bounded while preserving late local edits.
+
+**Post-push drift behavior updated.** After a successful push, sync does not restart. Before each local `disk: "write"` mutation, it performs a targeted hash check; if the path drifted, that local write is skipped so newer local edits are preserved for the next cycle.
 
 **PushPayload includes snapshot.** The push commit now includes the updated `snapshot.json` alongside file changes, so the remote manifest stays in sync.
 
@@ -215,13 +217,14 @@ async sync() {
 2. **Fetch remote**: `provider.fetch(localSnapshot)` → remote `ChangeSet`
 3. **Reconcile**: `reconcile(local, remote)` → `FileMutation[]`
 4. **Compute snapshot**: `computeSnapshot(oldSnapshot, mutations)` → new `snapshot.json` in memory. Must happen before push because the new snapshot is included in the push payload.
-5. **Push to remote**: build `PushPayload` from mutations + new `snapshot.json`, call `provider.push(payload)`. On `PushConflictError` → retry from step 2 (reuse local ChangeSet, max 3 retries).
-6. **Apply to disk**: `apply(mutations, provider)` — write/delete files, emit mutation events. For binary files where `source: "remote"`, calls `provider.get(path)` and pipes to disk.
-7. **Save snapshots**: `saveSnapshot(snapshot, mutations)` — write `snapshot.json` + text files to `snapshot.local/`
+5. **Pre-push drift check**: re-check only mutation-target paths against the scanned local state. If drift is detected, restart from step 1.
+6. **Push to remote**: build `PushPayload` from mutations + new `snapshot.json`, call `provider.push(payload)`. On `PushConflictError` → retry from step 2 with fresh remote data (shared max 5 attempts).
+7. **Apply to disk**: `apply(mutations, provider)` — write/delete files, emit mutation events. Before each local `disk: "write"`, re-check the target path and skip the write if it drifted. For binary files where `source: "remote"`, calls `provider.get(path)` and pipes to disk.
+8. **Save snapshots**: `saveSnapshot(snapshot, mutations)` — write `snapshot.json` + text files to `snapshot.local/`
 
 Push happens before local disk writes. If push fails, no local state has been modified — safe to retry or abort. If push succeeds but local writes fail (unlikely — disk full, permissions), next sync self-heals: remote has the correct state, stale local snapshot triggers a re-pull.
 
-The retry loop reuses the original local ChangeSet because disk hasn't changed during sync (single-flight guarantee from main.md). Only the remote ChangeSet is re-fetched, since the remote may have moved.
+Retry handling is bounded and path-targeted: pre-push drift restarts with a fresh scan, `PushConflictError` retries with fresh remote state, and post-push drift skips local overwrites instead of restarting.
 
 ## FileState
 
