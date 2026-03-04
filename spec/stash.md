@@ -210,7 +210,7 @@ Failure contract: when that bound is exceeded, `sync()` throws the last error an
 3. **Reconcile**: `reconcile(local, remote)` → `FileMutation[]`
 4. **Compute snapshot**: `computeSnapshot(oldSnapshot, mutations)` → new `snapshot.json` in memory. Must happen before push because the new snapshot is included in the push payload.
 5. **Pre-push drift check**: re-read only mutation-target paths (targeted hash checks, not a full directory scan). If any target path drifted since step 1, restart from step 1 (max 5 attempts).
-6. **Push to remote**: build `PushPayload` from mutations + new `snapshot.json`, call `provider.push(payload)`. Skip if mutations array is empty — nothing changed, nothing to commit. On `PushConflictError` → retry from step 2 with fresh remote data.
+6. **Push to remote**: build `PushPayload` from mutations + new `snapshot.json`, call `provider.push(payload)`. Skip if the payload has no file writes or deletions **and** the snapshot hasn't changed — nothing to commit. If the snapshot changed (e.g. first sync establishing the baseline), a snapshot-only commit is pushed even with no file changes. On `PushConflictError` → retry from step 2 with fresh remote data.
 7. **Pre-apply drift check**: before writing each `disk: "write"` mutation, verify that path still matches the state used for reconcile. If drift is detected, skip that local write (do not overwrite) and continue the cycle.
 8. **Apply to disk**: `apply(mutations, provider)` — write/delete files, emit mutation events. For binary files where `source: "remote"`, calls `provider.get(path)` and pipes to disk.
 9. **Save snapshots**: `saveSnapshot(snapshot, mutations)` — write `snapshot.json` + text files to `snapshot.local/`
@@ -388,12 +388,12 @@ Merge table:
 |-------|--------|------|--------|------------------|
 | modified | — | skip | write | local content |
 | — | modified | write | skip | remote content |
-| modified | modified (text) | write | write | merged via `mergeText()` |
-| modified | modified (binary) | write | write | source: last-modified wins |
+| modified | modified (text) | write or skip | write or skip | merged via `mergeText()` — skip if merged equals that side's content |
+| modified | modified (binary) | write or skip | write or skip | source: last-modified wins — skip if hashes equal |
 | added | — | skip | write | local content |
 | — | added | write | skip | remote content |
-| added | added (text) | write | write | merged via `mergeText()` |
-| added | added (binary) | write | write | source: last-modified wins |
+| added | added (text) | write or skip | write or skip | merged via `mergeText()` — skip if merged equals that side's content |
+| added | added (binary) | write or skip | write or skip | source: last-modified wins — skip if hashes equal |
 | deleted | — | skip | delete | — |
 | — | deleted | delete | skip | — |
 | deleted | modified | write | skip | remote content (content wins) |

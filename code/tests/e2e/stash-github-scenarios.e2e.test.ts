@@ -918,3 +918,38 @@ test("scenario 31: .stash local metadata is ignored remotely", E2E_OPTIONS, asyn
     }
   }
 });
+
+test("scenario 32: first sync with identical local and remote content skips redundant writes", E2E_OPTIONS, async () => {
+  let repo: RepoInfo | null = null;
+  const dirs: string[] = [];
+  try {
+    repo = await createRepo();
+    await upsertRemoteFile(repo.fullName, "hello.md", "hello");
+
+    const machine = await makeTempDir("identical-first-sync");
+    dirs.push(machine);
+    await writeLocalFiles(machine, { "hello.md": "hello" });
+    const stash = await Stash.init(machine, { github: { token: token! } });
+    await stash.connect("github", { repo: repo.fullName });
+    await syncWithRetry(stash);
+
+    assert.equal(await readFile(join(machine, "hello.md"), "utf8"), "hello");
+    assert.equal(await remoteFileExists(repo.fullName, ".stash/snapshot.json"), true);
+    assert.equal(await readRemoteText(repo.fullName, "hello.md"), "hello");
+
+    const localSnapshot = JSON.parse(
+      await readFile(join(machine, ".stash", "snapshot.json"), "utf8"),
+    );
+    assert.equal(typeof localSnapshot["hello.md"]?.hash, "string");
+    assert.equal(
+      localSnapshot["hello.md"].hash,
+      hashBuffer(Buffer.from("hello", "utf8")),
+    );
+
+    await syncWithRetry(stash);
+    assert.equal(await readFile(join(machine, "hello.md"), "utf8"), "hello");
+  } finally {
+    if (repo) await deleteRepo(repo.fullName);
+    await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+  }
+});

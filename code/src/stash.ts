@@ -182,7 +182,9 @@ export class Stash extends Emitter<StashEvents> {
 
           if (mutations.length > 0) {
             const payload = await this.buildPushPayload(mutations, nextSnapshot);
-            if (payload.files.size > 0 || payload.deletions.length > 0) {
+            const snapshotChanged =
+              JSON.stringify(nextSnapshot) !== JSON.stringify(localSnapshot);
+            if (payload.files.size > 0 || payload.deletions.length > 0 || snapshotChanged) {
               try {
                 await provider.push(payload);
               } catch (error) {
@@ -432,21 +434,21 @@ export class Stash extends Emitter<StashEvents> {
         const merged = this.mergeText(base, localState.content, remoteState.content);
         mutations.push({
           path,
-          disk: "write",
-          remote: "write",
+          disk: merged === localState.content ? "skip" : "write",
+          remote: merged === remoteState.content ? "skip" : "write",
           content: merged,
         });
         continue;
       }
 
       if (localState.type === "binary" && remoteState.type === "binary") {
-        // Equal mtimes choose local for deterministic tie-breaking.
         const localWins = localState.modified >= remoteState.modified;
         const winner = localWins ? localState : remoteState;
+        const identical = localState.hash === remoteState.hash;
         mutations.push({
           path,
-          disk: "write",
-          remote: "write",
+          disk: identical ? "skip" : "write",
+          remote: identical ? "skip" : "write",
           source: localWins ? "local" : "remote",
           hash: winner.hash,
           modified: winner.modified,

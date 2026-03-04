@@ -208,6 +208,86 @@ test("sync: deleting a file removes it from snapshot.local", async () => {
   assert.equal(existsSync(join(dir, ".stash", "snapshot.local", "hello.md")), false);
 });
 
+test("sync: first sync with identical content on both sides skips file writes", async () => {
+  const fake = new FakeProvider({
+    files: {
+      "hello.md": "hello",
+      "notes/todo.md": "buy milk",
+    },
+    snapshot: {
+      "hello.md": { hash: hashBuffer(Buffer.from("hello", "utf8")) },
+      "notes/todo.md": { hash: hashBuffer(Buffer.from("buy milk", "utf8")) },
+    },
+  });
+  const { stash, dir } = await makeStash(
+    { "hello.md": "hello", "notes/todo.md": "buy milk" },
+    { providers: fakeRegistry(fake) },
+  );
+  await stash.connect("fake", { repo: "r" });
+
+  await stash.sync();
+
+  const lastPush = fake.pushLog.at(-1);
+  assert.ok(lastPush, "push should have happened (snapshot needs to reach remote)");
+  assert.equal(lastPush.files.size, 0, "no file content should be pushed");
+  assert.deepEqual(lastPush.deletions, [], "no deletions should be pushed");
+
+  assert.equal(await readFile(join(dir, "hello.md"), "utf8"), "hello");
+  assert.equal(await readFile(join(dir, "notes/todo.md"), "utf8"), "buy milk");
+
+  const localSnapshot = JSON.parse(
+    await readFile(join(dir, ".stash", "snapshot.json"), "utf8"),
+  );
+  assert.equal(
+    localSnapshot["hello.md"]?.hash,
+    hashBuffer(Buffer.from("hello", "utf8")),
+  );
+  assert.equal(
+    localSnapshot["notes/todo.md"]?.hash,
+    hashBuffer(Buffer.from("buy milk", "utf8")),
+  );
+
+  assert.equal(
+    await readFile(join(dir, ".stash", "snapshot.local", "hello.md"), "utf8"),
+    "hello",
+  );
+  assert.equal(
+    await readFile(join(dir, ".stash", "snapshot.local", "notes/todo.md"), "utf8"),
+    "buy milk",
+  );
+});
+
+test("sync: skip/skip mutations with changed snapshot still pushes snapshot", async () => {
+  const fake = new FakeProvider();
+  const { stash, dir } = await makeStash(
+    { "hello.md": "hello" },
+    { providers: fakeRegistry(fake) },
+  );
+  await stash.connect("fake", { repo: "r" });
+  await stash.sync();
+
+  await writeFiles(dir, { "hello.md": "updated" });
+  fake.files.set("hello.md", "updated");
+  fake.snapshot["hello.md"] = {
+    hash: hashBuffer(Buffer.from("updated", "utf8")),
+  };
+
+  await stash.sync();
+
+  const lastPush = fake.pushLog.at(-1);
+  assert.ok(lastPush, "push should happen because snapshot changed");
+  assert.equal(lastPush.files.size, 0, "no file content should be pushed");
+  assert.deepEqual(lastPush.deletions, [], "no deletions should be pushed");
+
+  const localSnapshot = JSON.parse(
+    await readFile(join(dir, ".stash", "snapshot.json"), "utf8"),
+  );
+  assert.equal(
+    localSnapshot["hello.md"]?.hash,
+    hashBuffer(Buffer.from("updated", "utf8")),
+  );
+});
+
 test("sync: remote-source binary winner is not re-uploaded", async () => {
   const baseline = Buffer.from([0xff, 0x00, 0x03]);
   const remote = Buffer.from([0xfe, 0x00, 0x06]);
