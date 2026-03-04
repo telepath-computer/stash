@@ -15,11 +15,11 @@ Local state was scanned once and then reused through reconcile/push/apply. If fi
 
 ## Solution
 
-- Added shared retry bound of `3` attempts for restart-worthy races.
+- Added shared retry bound of `5` attempts for restart-worthy races.
 - Added pre-push drift check:
   - If local files drift from the scanned state, restart sync cycle.
 - Added pre-apply drift check:
-  - If local files drift before local writes, restart sync cycle.
+  - If local files drift before local writes, skip local overwrite for drifted paths.
 - Added terminal failure contract:
   - When retry bound is exceeded, throw and stop failed cycle.
   - Do not continue with apply/save in terminal failed attempt.
@@ -36,14 +36,14 @@ These tests verify:
 
 - Latest local in-flight edit is preserved
 - Remote edit is preserved
-- Drift retry loop is bounded to exactly 3 attempts
+- Drift retry loop is bounded to exactly 5 attempts
 - Terminal failure does not proceed to apply/save
 
 ## Spec Updates
 
 - `spec/stash.md`
-  - Added explicit retry bound (`3`) and failure contract.
-  - Updated `sync()` flow to include pre-push and pre-apply drift checks with restarts.
+  - Added explicit retry bound (`5`) and failure contract.
+  - Updated `sync()` flow to include pre-push restart checks and post-push skip-on-drift behavior.
   - Clarified snapshot guarantee: snapshot reflects synchronized cycle state; later disk edits are picked up next sync.
   - Added integration test requirements for race windows and bounded drift retries.
 
