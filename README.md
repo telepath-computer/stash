@@ -12,9 +12,10 @@ Set up a stash and connect it to a GitHub repo:
 
 ```
 stash setup github          # one-time: provide your GitHub token
-stash init                   # in the directory you want to sync
 stash connect github --repo user/repo
 ```
+
+You'll need a GitHub [personal access token](https://github.com/settings/tokens). A classic token needs the `repo` scope. A fine-grained token needs **Contents: Read and write** permission on the target repo.
 
 Now sync:
 
@@ -35,9 +36,14 @@ Keeps your stash in sync continuously. Local edits are pushed, remote changes ar
 ### Other commands
 
 ```
+stash setup github    # update your GitHub token
 stash status          # show connections and local changes
 stash disconnect github
 ```
+
+### Config
+
+Global config (GitHub token) is stored at `~/.stash/config.json` (or `$XDG_CONFIG_HOME/stash/config.json`). Per-stash config (which repo) is in `.stash/config.local.json` inside the synced directory.
 
 ## How merging works
 
