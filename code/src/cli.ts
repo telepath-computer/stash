@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { existsSync } from "node:fs";
 import { Command, Option } from "commander";
 import { input, password } from "@inquirer/prompts";
 import { readGlobalConfig, writeGlobalConfig } from "./global-config.ts";
@@ -44,17 +43,6 @@ async function collectFields(
   return values;
 }
 
-async function runInit(): Promise<void> {
-  const dir = process.cwd();
-  const already = existsSync(`${dir}/.stash`);
-  await Stash.init(dir, await readGlobalConfig());
-  if (already) {
-    console.log("Already initialized. Delete .stash to reinitialize.");
-  } else {
-    console.log("Initialized stash.");
-  }
-}
-
 async function runSetup(
   providerName: string,
   valuesFromCli: Record<string, string | undefined>,
@@ -85,7 +73,7 @@ async function runConnect(
   globalConfig[providerName] = setupValues;
   await writeGlobalConfig(globalConfig);
 
-  const stash = await Stash.load(process.cwd(), globalConfig);
+  const stash = await Stash.init(process.cwd(), globalConfig);
   const connectValues = await collectFields(provider.spec.connect, valuesFromCli);
   await stash.connect(providerName, connectValues);
   console.log(`Connected ${providerName}.`);
@@ -152,8 +140,6 @@ async function main(argv = process.argv): Promise<void> {
     .name("stash")
     .description("Conflict-free synced folders")
     .showHelpAfterError();
-
-  program.command("init").description("Initialize current directory as a stash").action(runInit);
 
   const setupCommand = program
     .command("setup")
