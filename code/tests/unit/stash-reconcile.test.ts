@@ -124,7 +124,7 @@ test("reconcile: both added text merges", async () => {
     makeChangeSet({ added: { "notes.md": { type: "text", content: "from B" } } }),
   );
   assert.equal(mutation.disk, "write");
-  assert.equal(mutation.remote, "write");
+  assert.equal(mutation.remote, "skip");
   assert.equal(mutation.content, "from B");
 });
 
@@ -217,4 +217,79 @@ test("reconcile: both deleted becomes skip/skip", async () => {
     disk: "skip",
     remote: "skip",
   });
+});
+
+test("reconcile: both added text with identical content produces skip/skip", async () => {
+  const { stash } = await makeStash();
+  const [mutation] = (stash as any).reconcile(
+    makeChangeSet({ added: { "notes.md": { type: "text", content: "hello" } } }),
+    makeChangeSet({ added: { "notes.md": { type: "text", content: "hello" } } }),
+  );
+  assert.deepEqual(mutation, {
+    path: "notes.md",
+    disk: "skip",
+    remote: "skip",
+    content: "hello",
+  });
+});
+
+test("reconcile: both modified text with identical content produces skip/skip", async () => {
+  const { stash } = await makeStash(
+    {},
+    { snapshotLocal: { "a.md": "original" } },
+  );
+  const [mutation] = (stash as any).reconcile(
+    makeChangeSet({ modified: { "a.md": { type: "text", content: "updated" } } }),
+    makeChangeSet({ modified: { "a.md": { type: "text", content: "updated" } } }),
+  );
+  assert.deepEqual(mutation, {
+    path: "a.md",
+    disk: "skip",
+    remote: "skip",
+    content: "updated",
+  });
+});
+
+test("reconcile: both added binary with identical hash produces skip/skip", async () => {
+  const { stash } = await makeStash();
+  const [mutation] = (stash as any).reconcile(
+    makeChangeSet({
+      added: {
+        "img.png": { type: "binary", hash: "same-hash", modified: 2_000 },
+      },
+    }),
+    makeChangeSet({
+      added: {
+        "img.png": { type: "binary", hash: "same-hash", modified: 1_000 },
+      },
+    }),
+  );
+  assert.equal(mutation.path, "img.png");
+  assert.equal(mutation.disk, "skip");
+  assert.equal(mutation.remote, "skip");
+  assert.equal(mutation.source, "local");
+  assert.equal(mutation.hash, "same-hash");
+  assert.equal(mutation.modified, 2_000);
+});
+
+test("reconcile: both modified binary with identical hash produces skip/skip", async () => {
+  const { stash } = await makeStash();
+  const [mutation] = (stash as any).reconcile(
+    makeChangeSet({
+      modified: {
+        "img.png": { type: "binary", hash: "same-hash", modified: 2_000 },
+      },
+    }),
+    makeChangeSet({
+      modified: {
+        "img.png": { type: "binary", hash: "same-hash", modified: 1_000 },
+      },
+    }),
+  );
+  assert.equal(mutation.path, "img.png");
+  assert.equal(mutation.disk, "skip");
+  assert.equal(mutation.remote, "skip");
+  assert.equal(mutation.source, "local");
+  assert.equal(mutation.hash, "same-hash");
+  assert.equal(mutation.modified, 2_000);
 });

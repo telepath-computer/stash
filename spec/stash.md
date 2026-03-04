@@ -206,7 +206,7 @@ class SyncLockError extends Error {}
 2. **Fetch remote**: `provider.fetch(localSnapshot)` → remote `ChangeSet`
 3. **Reconcile**: `reconcile(local, remote)` → `FileMutation[]`
 4. **Compute snapshot**: `computeSnapshot(oldSnapshot, mutations)` → new `snapshot.json` in memory. Must happen before push because the new snapshot is included in the push payload.
-5. **Push to remote**: build `PushPayload` from mutations + new `snapshot.json`, call `provider.push(payload)`. Skip if mutations array is empty — nothing changed, nothing to commit. On `PushConflictError` → retry from step 2 (reuse local ChangeSet, max 3 retries).
+5. **Push to remote**: build `PushPayload` from mutations + new `snapshot.json`, call `provider.push(payload)`. Skip if the payload has no file writes or deletions **and** the snapshot hasn't changed — nothing to commit. If the snapshot changed (e.g. first sync establishing the baseline), a snapshot-only commit is pushed even with no file changes. On `PushConflictError` → retry from step 2 (reuse local ChangeSet, max 3 retries).
 6. **Apply to disk**: `apply(mutations, provider)` — write/delete files, emit mutation events. For binary files where `source: "remote"`, calls `provider.get(path)` and pipes to disk.
 7. **Save snapshots**: `saveSnapshot(snapshot, mutations)` — write `snapshot.json` + text files to `snapshot.local/`
 8. **Release sync lock**: clear in-process flag and delete `.stash/sync.lock` in `finally`
@@ -381,12 +381,12 @@ Merge table:
 |-------|--------|------|--------|------------------|
 | modified | — | skip | write | local content |
 | — | modified | write | skip | remote content |
-| modified | modified (text) | write | write | merged via `mergeText()` |
-| modified | modified (binary) | write | write | source: last-modified wins |
+| modified | modified (text) | write or skip | write or skip | merged via `mergeText()` — skip if merged equals that side's content |
+| modified | modified (binary) | write or skip | write or skip | source: last-modified wins — skip if hashes equal |
 | added | — | skip | write | local content |
 | — | added | write | skip | remote content |
-| added | added (text) | write | write | merged via `mergeText()` |
-| added | added (binary) | write | write | source: last-modified wins |
+| added | added (text) | write or skip | write or skip | merged via `mergeText()` — skip if merged equals that side's content |
+| added | added (binary) | write or skip | write or skip | source: last-modified wins — skip if hashes equal |
 | deleted | — | skip | delete | — |
 | — | deleted | delete | skip | — |
 | deleted | modified | write | skip | remote content (content wins) |
