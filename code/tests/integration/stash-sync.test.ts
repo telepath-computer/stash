@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { readFile, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { hashBuffer } from "../../src/utils/hash.ts";
@@ -520,6 +520,72 @@ test("sync: case-only rename does not trigger drift retry", async () => {
 
   // Only 1 fetch call — no drift retries
   assert.equal(fake.fetchCalls, 1);
+});
+
+test("sync: directory case rename applies correctly on pull", async () => {
+  const fake = new FakeProvider();
+  const { stash, dir } = await makeStash(
+    { "Notes/draft.md": "hello" },
+    { providers: fakeRegistry(fake) },
+  );
+  await stash.connect("fake", { repo: "r" });
+  await stash.sync();
+
+  // Simulate remote rename: Notes/draft.md → notes/draft.md
+  fake.files.delete("Notes/draft.md");
+  fake.files.set("notes/draft.md", "hello");
+  delete fake.snapshot["Notes/draft.md"];
+  fake.snapshot["notes/draft.md"] = {
+    hash: hashBuffer(Buffer.from("hello")),
+    type: "text",
+  };
+
+  await stash.sync();
+
+  // Verify disk has lowercase directory
+  const dirs = readdirSync(dir).filter(
+    (e) => e.toLowerCase() === "notes",
+  );
+  assert.deepEqual(dirs, ["notes"]);
+  assert.equal(
+    await readFile(join(dir, "notes", "draft.md"), "utf8"),
+    "hello",
+  );
+});
+
+test("sync: nested directory case rename applies correctly", async () => {
+  const fake = new FakeProvider();
+  const { stash, dir } = await makeStash(
+    { "Docs/Notes/draft.md": "hello" },
+    { providers: fakeRegistry(fake) },
+  );
+  await stash.connect("fake", { repo: "r" });
+  await stash.sync();
+
+  // Simulate remote rename: Docs/Notes/ → docs/notes/
+  fake.files.delete("Docs/Notes/draft.md");
+  fake.files.set("docs/notes/draft.md", "hello");
+  delete fake.snapshot["Docs/Notes/draft.md"];
+  fake.snapshot["docs/notes/draft.md"] = {
+    hash: hashBuffer(Buffer.from("hello")),
+    type: "text",
+  };
+
+  await stash.sync();
+
+  // Verify both directory segments renamed
+  const topDirs = readdirSync(dir).filter(
+    (e) => e.toLowerCase() === "docs",
+  );
+  assert.deepEqual(topDirs, ["docs"]);
+  const nestedDirs = readdirSync(join(dir, "docs")).filter(
+    (e) => e.toLowerCase() === "notes",
+  );
+  assert.deepEqual(nestedDirs, ["notes"]);
+  assert.equal(
+    await readFile(join(dir, "docs", "notes", "draft.md"), "utf8"),
+    "hello",
+  );
 });
 
 test("sync: true deletion still works alongside casing check", async () => {
