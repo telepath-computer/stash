@@ -212,13 +212,15 @@ Failure contract: when that bound is exceeded, `sync()` throws the last error an
 5. **Pre-push drift check**: re-read only mutation-target paths (targeted hash checks, not a full directory scan). If any target path drifted since step 1, restart from step 1 (max 5 attempts).
 6. **Push to remote**: build `PushPayload` from mutations + new `snapshot.json`, call `provider.push(payload)`. Skip if the payload has no file writes or deletions **and** the snapshot hasn't changed — nothing to commit. If the snapshot changed (e.g. first sync establishing the baseline), a snapshot-only commit is pushed even with no file changes. On `PushConflictError` → retry from step 2 with fresh remote data.
 7. **Pre-apply drift check**: before writing each `disk: "write"` mutation, verify that path still matches the state used for reconcile. If drift is detected, skip that local write (do not overwrite) and continue the cycle.
-8. **Apply to disk**: `apply(mutations, provider)` — write/delete files, emit mutation events. For binary files where `source: "remote"`, calls `provider.get(path)` and pipes to disk.
+8. **Apply to disk**: `apply(mutations, provider)` — delete then write files, emit mutation events. Deletes are processed before writes to handle case-only renames on case-insensitive filesystems (where a write and delete to different-cased paths target the same file). For binary files where `source: "remote"`, calls `provider.get(path)` and pipes to disk.
 9. **Save snapshots**: `saveSnapshot(snapshot, mutations)` — write `snapshot.json` + text files to `snapshot.local/`
 10. **Release sync lock**: clear in-process flag and delete `.stash/sync.lock` in `finally`
 
 Push happens before local disk writes. If push fails, no local state has been modified — safe to retry or abort. If push succeeds but local writes fail (unlikely — disk full, permissions), next sync self-heals: remote has the correct state, stale local snapshot triggers a re-pull.
 
 Race handling: local files may change while sync is in flight. Drift checks are path-targeted (per mutation path), not full rescans. Pre-push drift restarts the cycle with a fresh scan (bounded to 5 attempts). Post-push drift does not restart; drifted local writes are skipped so newer local edits are preserved and converge on a later sync.
+
+Case-insensitive filesystems: drift checks verify exact filename casing for each path segment before returning a hash. On case-insensitive filesystems (e.g. macOS APFS), `existsSync("Arabella.md")` returns `true` even when disk has `arabella.md`. The drift check detects this casing mismatch and returns `null` — the file does not exist at that exact path. This prevents false drift detection when files are renamed with only a case change.
 
 Snapshot guarantee: `snapshot.json` and `snapshot.local/` represent the synchronized state for that cycle, except paths skipped by post-push drift protection. For skipped paths, local snapshot entries intentionally remain at the prior base so the next sync treats both sides as changed and re-merges. They are not a lock on future disk state — files may change immediately after apply/save, and those newer local edits are picked up on the next sync.
 

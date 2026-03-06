@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Emitter } from "./emitter.ts";
 import { PushConflictError, SyncLockError } from "./errors.ts";
@@ -546,7 +546,14 @@ export class Stash extends Emitter<StashEvents> {
     expectedHashes: Map<string, string | null>,
   ): Promise<Set<string>> {
     const skippedWritePaths = new Set<string>();
-    for (const mutation of mutations) {
+    // Process deletes before writes so case-only renames on
+    // case-insensitive filesystems don't delete a just-written file.
+    const ordered = [...mutations].sort((a, b) => {
+      const aIsDelete = a.disk === "delete" ? 0 : 1;
+      const bIsDelete = b.disk === "delete" ? 0 : 1;
+      return aIsDelete - bIsDelete;
+    });
+    for (const mutation of ordered) {
       let diskAction = mutation.disk;
       if (diskAction === "write") {
         const expectedHash = expectedHashes.get(mutation.path) ?? null;
@@ -676,9 +683,28 @@ export class Stash extends Emitter<StashEvents> {
     return this.currentHash(path) !== expectedHash;
   }
 
+  private hasExactCasing(relPath: string): boolean {
+    const segments = relPath.split("/");
+    let current = this.dir;
+    for (const segment of segments) {
+      const entries = readdirSync(current);
+      const actual = entries.find(
+        (entry) => entry.toLowerCase() === segment.toLowerCase(),
+      );
+      if (!actual || actual !== segment) {
+        return false;
+      }
+      current = join(current, actual);
+    }
+    return true;
+  }
+
   private currentHash(path: string): string | null {
     const absPath = this.abs(path);
     if (!existsSync(absPath)) {
+      return null;
+    }
+    if (!this.hasExactCasing(path)) {
       return null;
     }
     const stat = lstatSync(absPath);

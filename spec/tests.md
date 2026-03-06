@@ -471,3 +471,18 @@ This validates retry bounds for remote-ref races and prevents infinite conflict 
 ```
 
 This validates retry bounds for local in-flight edits under sustained churn.
+
+### Sync — Case-Insensitive Filesystems
+
+#### 36. Case-only rename syncs to remote and back
+
+```
+- Machine A: sync "notes/Arabella.md" with content "hello"
+- Machine A: rename to "notes/arabella.md" on disk (same content)
+- Machine A: sync() — succeeds, no drift error
+- Verify remote has "notes/arabella.md" and no "notes/Arabella.md"
+- Machine B: sync()
+- Verify Machine B has "notes/arabella.md" with content "hello"
+```
+
+This validates that case-only renames don't trigger false drift detection on case-insensitive filesystems (e.g. macOS APFS).
