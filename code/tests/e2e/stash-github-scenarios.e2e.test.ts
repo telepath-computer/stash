@@ -7,6 +7,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  rename,
   rm,
   symlink,
   unlink,
@@ -948,6 +949,41 @@ test("scenario 32: first sync with identical local and remote content skips redu
 
     await syncWithRetry(stash);
     assert.equal(await readFile(join(machine, "hello.md"), "utf8"), "hello");
+  } finally {
+    if (repo) await deleteRepo(repo.fullName);
+    await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+  }
+});
+
+test("scenario 36: case-only rename syncs to remote and back", E2E_OPTIONS, async () => {
+  let repo: RepoInfo | null = null;
+  const dirs: string[] = [];
+  try {
+    const result = await setupTwoMachineBaseline({
+      "notes/Arabella.md": "hello",
+    });
+    repo = result.repo;
+    dirs.push(...result.dirs);
+    const { machineA, machineB } = result;
+
+    // Machine A: rename to lowercase (two-step for case-insensitive FS)
+    const tmp = join(machineA.dir, "notes", "Arabella.md.tmp");
+    await rename(join(machineA.dir, "notes", "Arabella.md"), tmp);
+    await rename(tmp, join(machineA.dir, "notes", "arabella.md"));
+
+    await syncWithRetry(machineA.stash);
+
+    // Verify remote has new-case file, not old-case
+    assert.equal(await remoteFileExists(repo.fullName, "notes/arabella.md"), true);
+    assert.equal(await readRemoteText(repo.fullName, "notes/arabella.md"), "hello");
+    assert.equal(await remoteFileExists(repo.fullName, "notes/Arabella.md"), false);
+
+    // Machine B: sync should pull the rename
+    await syncWithRetry(machineB.stash);
+    assert.equal(
+      await readFile(join(machineB.dir, "notes", "arabella.md"), "utf8"),
+      "hello",
+    );
   } finally {
     if (repo) await deleteRepo(repo.fullName);
     await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));

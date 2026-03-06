@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { readFile, unlink } from "node:fs/promises";
+import { readFile, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { hashBuffer } from "../../src/utils/hash.ts";
 import { PushConflictError, SyncLockError } from "../../src/errors.ts";
@@ -450,4 +450,95 @@ test("sync: drift retries are bounded and failed cycle does not apply/save", asy
     await readFile(join(dir, ".stash", "snapshot.json"), "utf8"),
   );
   assert.deepEqual(afterSnapshot, beforeSnapshot);
+});
+
+test("sync: case-only rename syncs successfully", async () => {
+  const fake = new FakeProvider();
+  const { stash, dir } = await makeStash(
+    { "notes/Arabella.md": "hello" },
+    { providers: fakeRegistry(fake) },
+  );
+  await stash.connect("fake", { repo: "r" });
+  await stash.sync();
+
+  // Rename to lowercase on disk (two-step for case-insensitive FS)
+  const tmp = join(dir, "notes", "Arabella.md.tmp");
+  await rename(join(dir, "notes", "Arabella.md"), tmp);
+  await rename(tmp, join(dir, "notes", "arabella.md"));
+
+  await stash.sync();
+
+  // Remote should have the new-case file
+  assert.equal(fake.files.has("notes/arabella.md"), true);
+  assert.equal(fake.files.get("notes/arabella.md"), "hello");
+  // Old-case path should be gone from remote
+  assert.equal(fake.files.has("notes/Arabella.md"), false);
+  // Snapshot updated to new casing
+  const snapshot = JSON.parse(
+    await readFile(join(dir, ".stash", "snapshot.json"), "utf8"),
+  );
+  assert.ok(snapshot["notes/arabella.md"]);
+  assert.equal(snapshot["notes/Arabella.md"], undefined);
+});
+
+test("sync: case-only rename with content change syncs successfully", async () => {
+  const fake = new FakeProvider();
+  const { stash, dir } = await makeStash(
+    { "notes/Arabella.md": "v1" },
+    { providers: fakeRegistry(fake) },
+  );
+  await stash.connect("fake", { repo: "r" });
+  await stash.sync();
+
+  // Rename and change content
+  const tmp = join(dir, "notes", "Arabella.md.tmp");
+  await rename(join(dir, "notes", "Arabella.md"), tmp);
+  await rename(tmp, join(dir, "notes", "arabella.md"));
+  await writeFiles(dir, { "notes/arabella.md": "v2" });
+
+  await stash.sync();
+
+  assert.equal(fake.files.get("notes/arabella.md"), "v2");
+  assert.equal(fake.files.has("notes/Arabella.md"), false);
+});
+
+test("sync: case-only rename does not trigger drift retry", async () => {
+  const fake = new FakeProvider();
+  const { stash, dir } = await makeStash(
+    { "notes/Arabella.md": "hello" },
+    { providers: fakeRegistry(fake) },
+  );
+  await stash.connect("fake", { repo: "r" });
+  await stash.sync();
+  fake.fetchCalls = 0;
+
+  const tmp = join(dir, "notes", "Arabella.md.tmp");
+  await rename(join(dir, "notes", "Arabella.md"), tmp);
+  await rename(tmp, join(dir, "notes", "arabella.md"));
+
+  await stash.sync();
+
+  // Only 1 fetch call — no drift retries
+  assert.equal(fake.fetchCalls, 1);
+});
+
+test("sync: true deletion still works alongside casing check", async () => {
+  const fake = new FakeProvider();
+  const { stash, dir } = await makeStash(
+    { "notes/Arabella.md": "hello", "other.md": "keep" },
+    { providers: fakeRegistry(fake) },
+  );
+  await stash.connect("fake", { repo: "r" });
+  await stash.sync();
+
+  await unlink(join(dir, "notes", "Arabella.md"));
+
+  await stash.sync();
+
+  assert.equal(fake.files.has("notes/Arabella.md"), false);
+  assert.equal(fake.files.get("other.md"), "keep");
+  const snapshot = JSON.parse(
+    await readFile(join(dir, ".stash", "snapshot.json"), "utf8"),
+  );
+  assert.equal(snapshot["notes/Arabella.md"], undefined);
 });
