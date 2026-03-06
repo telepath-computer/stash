@@ -1,6 +1,6 @@
 {
   "name": "@telepath-computer/stash",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Conflict-free synced folders",
   "type": "module",
   "main": "./dist/index.js",
