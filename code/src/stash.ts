@@ -7,6 +7,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   unlinkSync,
@@ -568,6 +569,7 @@ export class Stash extends Emitter<StashEvents> {
       if (diskAction === "delete") {
         this.safeDelete(target);
       } else if (diskAction === "write") {
+        this.ensureDirectoryCasing(mutation.path);
         await mkdir(dirname(target), { recursive: true });
 
         if (mutation.content !== undefined) {
@@ -681,6 +683,22 @@ export class Stash extends Emitter<StashEvents> {
 
   private pathDrifted(path: string, expectedHash: string | null): boolean {
     return this.currentHash(path) !== expectedHash;
+  }
+
+  private ensureDirectoryCasing(relPath: string): void {
+    const segments = relPath.split("/");
+    const dirSegments = segments.slice(0, -1);
+    let current = this.dir;
+    for (const segment of dirSegments) {
+      const entries = readdirSync(current);
+      const actual = entries.find(
+        (entry) => entry.toLowerCase() === segment.toLowerCase(),
+      );
+      if (actual && actual !== segment && !entries.includes(segment)) {
+        renameSync(join(current, actual), join(current, segment));
+      }
+      current = join(current, segment);
+    }
   }
 
   private hasExactCasing(relPath: string): boolean {

@@ -486,3 +486,19 @@ This validates retry bounds for local in-flight edits under sustained churn.
 ```
 
 This validates that case-only renames don't trigger false drift detection on case-insensitive filesystems (e.g. macOS APFS).
+
+#### 37. Directory case rename converges across two machines
+
+```
+- Baseline: Notes/draft.md ("hello"), both machines synced
+- Machine A: rename Notes/ → notes/ on disk (same content)
+- Machine A: sync()
+- Machine B: sync()
+- Machine B: sync() again
+- Machine A: sync() again
+- Verify remote has "notes/draft.md" and no "Notes/draft.md"
+- Verify both machines have "notes/" directory (not "Notes/")
+- Verify both snapshots agree
+```
+
+This validates that directory case renames applied on one machine propagate correctly to another machine via `ensureDirectoryCasing` in `apply()`, without oscillation.
