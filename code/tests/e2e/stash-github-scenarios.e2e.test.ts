@@ -953,3 +953,20 @@ test("scenario 32: first sync with identical local and remote content skips redu
     await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
   }
 });
+
+test("scenario 33: sync fails with clear error when token cannot access repo", E2E_OPTIONS, async () => {
+  const username = await getUsername();
+  const fakeName = `this-repo-does-not-exist-${randomUUID().slice(0, 8)}`;
+  const provider = new (await import("../../src/providers/github-provider.ts")).GitHubProvider({
+    token: token!,
+    repo: `${username}/${fakeName}`,
+  });
+
+  await assert.rejects(
+    provider.fetch({}),
+    (err: Error) => {
+      assert.match(err.message, /Cannot access repository/);
+      return true;
+    },
+  );
+});

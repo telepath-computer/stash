@@ -17,28 +17,40 @@ function getProvider(name: string): ProviderClass {
   return provider;
 }
 
-async function promptField(field: Field): Promise<string> {
+async function promptField(field: Field, message?: string): Promise<string> {
+  const msg = message ?? field.label;
   if (field.secret) {
-    return password({ message: field.label });
+    return password({ message: msg });
   }
-  return input({ message: field.label });
+  return input({ message: msg });
 }
 
-async function collectFields(
+type PromptFn = (field: Field, message: string) => Promise<string>;
+
+export async function collectFields(
   fields: Field[],
   valuesFromCli: Record<string, string | undefined>,
   current: Record<string, string> = {},
+  prompt: PromptFn = promptField,
 ): Promise<Record<string, string>> {
   const values: Record<string, string> = { ...current };
   for (const field of fields) {
-    if (values[field.name]) {
-      continue;
-    }
     if (valuesFromCli[field.name]) {
       values[field.name] = valuesFromCli[field.name]!;
       continue;
     }
-    values[field.name] = await promptField(field);
+    if (values[field.name]) {
+      const existing = values[field.name];
+      const masked = field.secret
+        ? `****${existing.slice(-4)}`
+        : existing;
+      const newValue = await prompt(field, `${field.label} [current: ${masked}]`);
+      if (newValue) {
+        values[field.name] = newValue;
+      }
+      continue;
+    }
+    values[field.name] = await prompt(field, field.label);
   }
   return values;
 }

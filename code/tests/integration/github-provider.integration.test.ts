@@ -16,6 +16,7 @@ test("github integration: fetch then push carries head/tree state", async () => 
   const requests: Array<{ stage: string; body: any }> = [];
   const api = new MockGitHubAPI();
   const cleanup = api
+    .on("GET", "/repos/user/repo", { status: 200, body: { id: 1 } })
     .on("GET", "/repos/user/repo/branches/main", {
       status: 200,
       body: { commit: { sha: "head123", commit: { tree: { sha: "tree123" } } } },
@@ -71,6 +72,7 @@ test("github integration: full fetch to push realistic walkthrough", async () =>
   const requests: Array<{ stage: string; body: any }> = [];
   const api = new MockGitHubAPI();
   const cleanup = api
+    .on("GET", "/repos/user/repo", { status: 200, body: { id: 1 } })
     .on("GET", "/repos/user/repo/branches/main", {
       status: 200,
       body: { commit: { sha: "abc123", commit: { tree: { sha: "def456" } } } },

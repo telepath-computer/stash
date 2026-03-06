@@ -275,9 +275,9 @@ interface Provider {
 }
 ```
 
-- `fetch()` returns what changed on the remote since last sync. `localSnapshot` is the local `snapshot.json` content — provider compares hashes against remote `snapshot.json` to determine what changed, then fetches only changed file content. If `localSnapshot` is undefined (first sync): all remote files returned as `added`. Text content is included inline because merge always needs both versions. Binary content is not — reconcile decides via last-modified-wins whether remote bytes are even needed.
+- `fetch()` returns what changed on the remote since last sync. First verifies the repo is accessible — if the repo returns 404, sync fails with a clear error rather than silently returning no changes. `localSnapshot` is the local `snapshot.json` content — provider compares hashes against remote `snapshot.json` to determine what changed, then fetches only changed file content. If `localSnapshot` is undefined (first sync): all remote files returned as `added`. Text content is included inline because merge always needs both versions. Binary content is not — reconcile decides via last-modified-wins whether remote bytes are even needed.
 - `get()` streams a single binary file from remote. Called after reconcile, only for binary files where reconcile determined `source: "remote"`.
-- `push()` applies writes and deletes. Always preceded by a `fetch()`.
+- `push()` applies writes and deletes. Always preceded by a `fetch()`. Only fast-forward failures (remote ref moved since fetch) are retried as push conflicts. Other 422 errors (rulesets, permissions) are surfaced directly as non-retryable errors.
 
 On push, if the remote ref has moved since fetch (another machine synced), the provider throws `PushConflictError`. It does not retry — that's Stash's responsibility.
 

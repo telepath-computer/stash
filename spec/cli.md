@@ -25,6 +25,8 @@ stash setup github --token ghp_...
 stash setup github              # prompts for token
 ```
 
+When re-running setup, existing values are shown (masked for secrets, e.g. `[current: ****a3f2]`) and can be replaced by entering a new value or kept by pressing Enter.
+
 Writes to [global config](#global-config) under the provider name.
 
 ### `stash connect <provider>`
@@ -385,7 +387,10 @@ const stash = await Stash.load(dir, globalConfig)
 
 1. Look up provider class from registry
 2. Read `ProviderSpec.setup` fields
-3. For each field: use `--field value` flag if provided, otherwise prompt interactively (masked if `secret: true`)
+3. For each field:
+   - If `--field value` flag provided: use it without prompting
+   - If field already has a value (from prior setup) and no CLI flag: prompt showing current value masked for secrets (e.g. `Personal access token [current: ****a3f2]:`) or full value for non-secrets. Empty input keeps the existing value; new input replaces it.
+   - Otherwise: prompt interactively (masked if `secret: true`)
 4. Write to global config under provider name
 
 ### CLI flow for `stash connect`

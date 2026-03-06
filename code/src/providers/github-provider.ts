@@ -76,7 +76,16 @@ export class GitHubProvider implements Provider {
   }
 
   async fetch(localSnapshot?: Record<string, SnapshotEntry>): Promise<ChangeSet> {
-    const branchRes = await this.rest("GET", this.repoPath("/branches/main"));
+    const [repoRes, branchRes] = await Promise.all([
+      this.rest("GET", this.repoPath("")),
+      this.rest("GET", this.repoPath("/branches/main")),
+    ]);
+    if (repoRes.status === 404) {
+      throw new Error(
+        `Cannot access repository ${this.owner}/${this.name}. Check that the repo exists and your token has Contents: Read permission.`,
+      );
+    }
+    await this.ensureOk(repoRes, "Failed to check repository access");
     if (branchRes.status === 404) {
       this.headSha = undefined;
       this.baseTreeSha = undefined;
@@ -334,7 +343,12 @@ export class GitHubProvider implements Provider {
         { sha: commitSha, force: false },
       );
       if (refRes.status === 422) {
-        throw new PushConflictError("Remote main moved during push");
+        const body = await refRes.json();
+        const message = body.message ?? "";
+        if (message === "Update is not a fast forward") {
+          throw new PushConflictError("Remote main moved during push");
+        }
+        throw new Error(`Push failed: ${message}`);
       }
       await this.ensureOk(refRes, "Failed to update main ref");
     } else {

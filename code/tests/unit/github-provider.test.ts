@@ -24,6 +24,7 @@ test("GitHubProvider constructor validates owner/repo format", () => {
 test("GitHubProvider.fetch: empty repo returns empty changeset", async () => {
   const api = new MockGitHubAPI();
   const cleanup = api
+    .on("GET", "/repos/user/repo", { status: 200, body: { id: 1 } })
     .on("GET", "/repos/user/repo/branches/main", { status: 404, body: { message: "Not Found" } })
     .install();
 
@@ -46,6 +47,7 @@ test("GitHubProvider.fetch: diffs remote snapshot and fetches changed text", asy
   };
   const api = new MockGitHubAPI();
   const cleanup = api
+    .on("GET", "/repos/user/repo", { status: 200, body: { id: 1 } })
     .on("GET", "/repos/user/repo/branches/main", {
       status: 200,
       body: { commit: { sha: "head", commit: { tree: { sha: "tree" } } } },
@@ -98,6 +100,7 @@ test("GitHubProvider.fetch: no remote changes skips GraphQL", async () => {
   const snapshot = { "hello.md": { hash: "same" } };
   const api = new MockGitHubAPI();
   const cleanup = api
+    .on("GET", "/repos/user/repo", { status: 200, body: { id: 1 } })
     .on("GET", "/repos/user/repo/branches/main", {
       status: 200,
       body: { commit: { sha: "head", commit: { tree: { sha: "tree" } } } },
@@ -127,6 +130,7 @@ test("GitHubProvider.fetch: first sync with no local snapshot returns all added"
   };
   const api = new MockGitHubAPI();
   const cleanup = api
+    .on("GET", "/repos/user/repo", { status: 200, body: { id: 1 } })
     .on("GET", "/repos/user/repo/branches/main", {
       status: 200,
       body: { commit: { sha: "head", commit: { tree: { sha: "tree" } } } },
@@ -165,6 +169,7 @@ test("GitHubProvider.fetch: first sync with no local snapshot returns all added"
 test("GitHubProvider.fetch: no remote snapshot uses tree listing", async () => {
   const api = new MockGitHubAPI();
   const cleanup = api
+    .on("GET", "/repos/user/repo", { status: 200, body: { id: 1 } })
     .on("GET", "/repos/user/repo/branches/main", {
       status: 200,
       body: { commit: { sha: "head", commit: { tree: { sha: "tree" } } } },
@@ -220,6 +225,7 @@ test("GitHubProvider.fetch: classification uses GraphQL isBinary=true", async ()
   const remoteSnapshot = { "image.bin": { hash: "h1" } };
   const api = new MockGitHubAPI();
   const cleanup = api
+    .on("GET", "/repos/user/repo", { status: 200, body: { id: 1 } })
     .on("GET", "/repos/user/repo/branches/main", {
       status: 200,
       body: { commit: { sha: "head", commit: { tree: { sha: "tree" } } } },
@@ -258,6 +264,7 @@ test("GitHubProvider.fetch: classification with invalid UTF-8 falls back to bina
   const remoteSnapshot = { "latin1.txt": { hash: "h1" } };
   const api = new MockGitHubAPI();
   const cleanup = api
+    .on("GET", "/repos/user/repo", { status: 200, body: { id: 1 } })
     .on("GET", "/repos/user/repo/branches/main", {
       status: 200,
       body: { commit: { sha: "head", commit: { tree: { sha: "tree" } } } },
@@ -301,6 +308,7 @@ test("GitHubProvider.fetch: binary snapshot entry skips GraphQL content", async 
   };
   const api = new MockGitHubAPI();
   const cleanup = api
+    .on("GET", "/repos/user/repo", { status: 200, body: { id: 1 } })
     .on("GET", "/repos/user/repo/branches/main", {
       status: 200,
       body: { commit: { sha: "head", commit: { tree: { sha: "tree" } } } },
@@ -419,14 +427,14 @@ test("GitHubProvider.push: text-only push includes snapshot", async () => {
   }
 });
 
-test("GitHubProvider.push: 422 ref update throws PushConflictError", async () => {
+test("GitHubProvider.push: 422 ref update with fast-forward message throws PushConflictError", async () => {
   const api = new MockGitHubAPI();
   const cleanup = api
     .onPost("/repos/user/repo/git/trees", () => ({ status: 201, body: { sha: "tree-new" } }))
     .onPost("/repos/user/repo/git/commits", () => ({ status: 201, body: { sha: "commit-new" } }))
     .on("PATCH", "/repos/user/repo/git/refs/heads/main", {
       status: 422,
-      body: { message: "Update failed" },
+      body: { message: "Update is not a fast forward" },
     })
     .install();
 
@@ -605,9 +613,192 @@ test("GitHubProvider.push: empty repo bootstraps then pushes", async () => {
   }
 });
 
+test("GitHubProvider.fetch: repo 404 throws access error", async () => {
+  const api = new MockGitHubAPI();
+  const cleanup = api
+    .on("GET", "/repos/user/repo", { status: 404, body: { message: "Not Found" } })
+    .on("GET", "/repos/user/repo/branches/main", { status: 404, body: { message: "Not Found" } })
+    .install();
+
+  try {
+    const provider = makeProvider();
+    await assert.rejects(
+      provider.fetch({}),
+      (err: Error) => {
+        assert.match(err.message, /Cannot access repository user\/repo/);
+        return true;
+      },
+    );
+    api.assertDone();
+  } finally {
+    cleanup();
+  }
+});
+
+test("GitHubProvider.fetch: repo 200, branch 404 returns empty changeset (existing behavior)", async () => {
+  const api = new MockGitHubAPI();
+  const cleanup = api
+    .on("GET", "/repos/user/repo", { status: 200, body: { id: 1 } })
+    .on("GET", "/repos/user/repo/branches/main", { status: 404, body: { message: "Not Found" } })
+    .install();
+
+  try {
+    const provider = makeProvider();
+    const changeSet = await provider.fetch({});
+    assert.equal(changeSet.added.size, 0);
+    assert.equal(changeSet.modified.size, 0);
+    assert.deepEqual(changeSet.deleted, []);
+    api.assertDone();
+  } finally {
+    cleanup();
+  }
+});
+
+test("GitHubProvider.fetch: repo 200, branch 200 proceeds normally", async () => {
+  const remoteSnapshot = { "hello.md": { hash: "sha256-new" } };
+  const api = new MockGitHubAPI();
+  const cleanup = api
+    .on("GET", "/repos/user/repo", { status: 200, body: { id: 1 } })
+    .on("GET", "/repos/user/repo/branches/main", {
+      status: 200,
+      body: { commit: { sha: "head", commit: { tree: { sha: "tree" } } } },
+    })
+    .on("GET", "/repos/user/repo/contents/.stash/snapshot.json?ref=main", {
+      status: 200,
+      body: { content: b64(JSON.stringify(remoteSnapshot)) },
+    })
+    .onPost("/graphql", () => ({
+      status: 200,
+      body: {
+        data: {
+          repository: {
+            f0: { text: "hello content", isBinary: false },
+          },
+        },
+      },
+    }))
+    .install();
+
+  try {
+    const provider = makeProvider();
+    const result = await provider.fetch(undefined);
+    assert.equal(result.added.get("hello.md")?.type, "text");
+    assert.equal((result.added.get("hello.md") as any)?.content, "hello content");
+    api.assertDone();
+  } finally {
+    cleanup();
+  }
+});
+
+test("GitHubProvider.push: 422 'Update is not a fast forward' throws PushConflictError", async () => {
+  const api = new MockGitHubAPI();
+  const cleanup = api
+    .onPost("/repos/user/repo/git/trees", () => ({ status: 201, body: { sha: "tree-new" } }))
+    .onPost("/repos/user/repo/git/commits", () => ({ status: 201, body: { sha: "commit-new" } }))
+    .on("PATCH", "/repos/user/repo/git/refs/heads/main", {
+      status: 422,
+      body: { message: "Update is not a fast forward" },
+    })
+    .install();
+
+  try {
+    const provider = makeProvider();
+    (provider as any).headSha = "head";
+    (provider as any).baseTreeSha = "tree";
+    await assert.rejects(
+      provider.push({
+        files: new Map([["hello.md", "hi"]]),
+        deletions: [],
+        snapshot: {},
+      }),
+      (err: Error) => {
+        assert.equal(err instanceof PushConflictError, true);
+        return true;
+      },
+    );
+    api.assertDone();
+  } finally {
+    cleanup();
+  }
+});
+
+test("GitHubProvider.push: 422 with other message throws non-retryable Error", async () => {
+  const api = new MockGitHubAPI();
+  const cleanup = api
+    .onPost("/repos/user/repo/git/trees", () => ({ status: 201, body: { sha: "tree-new" } }))
+    .onPost("/repos/user/repo/git/commits", () => ({ status: 201, body: { sha: "commit-new" } }))
+    .on("PATCH", "/repos/user/repo/git/refs/heads/main", {
+      status: 422,
+      body: { message: "Required status check is expected" },
+    })
+    .install();
+
+  try {
+    const provider = makeProvider();
+    (provider as any).headSha = "head";
+    (provider as any).baseTreeSha = "tree";
+    await assert.rejects(
+      provider.push({
+        files: new Map([["hello.md", "hi"]]),
+        deletions: [],
+        snapshot: {},
+      }),
+      (err: Error) => {
+        assert.equal(err instanceof PushConflictError, false);
+        assert.match(err.message, /Push failed: Required status check is expected/);
+        return true;
+      },
+    );
+    api.assertDone();
+  } finally {
+    cleanup();
+  }
+});
+
+test("GitHubProvider.push: 422 'Object does not exist' throws non-retryable Error", async () => {
+  const api = new MockGitHubAPI();
+  const cleanup = api
+    .onPost("/repos/user/repo/git/trees", () => ({ status: 201, body: { sha: "tree-new" } }))
+    .onPost("/repos/user/repo/git/commits", () => ({ status: 201, body: { sha: "commit-new" } }))
+    .on("PATCH", "/repos/user/repo/git/refs/heads/main", {
+      status: 422,
+      body: { message: "Object does not exist" },
+    })
+    .install();
+
+  try {
+    const provider = makeProvider();
+    (provider as any).headSha = "head";
+    (provider as any).baseTreeSha = "tree";
+    await assert.rejects(
+      provider.push({
+        files: new Map([["hello.md", "hi"]]),
+        deletions: [],
+        snapshot: {},
+      }),
+      (err: Error) => {
+        assert.equal(err instanceof PushConflictError, false);
+        assert.match(err.message, /Push failed: Object does not exist/);
+        return true;
+      },
+    );
+    api.assertDone();
+  } finally {
+    cleanup();
+  }
+});
+
 test("GitHubProvider errors: rate limit response includes reset time", async () => {
   const api = new MockGitHubAPI();
   const cleanup = api
+    .on("GET", "/repos/user/repo", {
+      status: 403,
+      body: { message: "rate limited" },
+      headers: {
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": "2000000000",
+      },
+    })
     .on("GET", "/repos/user/repo/branches/main", {
       status: 403,
       body: { message: "rate limited" },
@@ -630,6 +821,10 @@ test("GitHubProvider errors: rate limit response includes reset time", async () 
 test("GitHubProvider errors: auth 401 throws descriptive error", async () => {
   const api = new MockGitHubAPI();
   const cleanup = api
+    .on("GET", "/repos/user/repo", {
+      status: 401,
+      body: { message: "bad credentials" },
+    })
     .on("GET", "/repos/user/repo/branches/main", {
       status: 401,
       body: { message: "bad credentials" },
