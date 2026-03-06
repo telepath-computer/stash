@@ -955,6 +955,72 @@ test("scenario 32: first sync with identical local and remote content skips redu
   }
 });
 
+test("scenario 37: directory case rename converges across two machines", E2E_OPTIONS, async () => {
+  let repo: RepoInfo | null = null;
+  const dirs: string[] = [];
+  try {
+    // Both machines start synced with Notes/draft.md
+    const result = await setupTwoMachineBaseline({
+      "Notes/draft.md": "hello",
+    });
+    repo = result.repo;
+    dirs.push(...result.dirs);
+    const { machineA, machineB } = result;
+
+    // Machine A: rename directory to lowercase (two-step for case-insensitive FS)
+    const tmpDir = join(machineA.dir, "Notes.tmp");
+    await rename(join(machineA.dir, "Notes"), tmpDir);
+    await rename(tmpDir, join(machineA.dir, "notes"));
+
+    // Machine A syncs — pushes lowercase path
+    await syncWithRetry(machineA.stash);
+
+    // Machine B syncs — pulls the rename
+    await syncWithRetry(machineB.stash);
+
+    // Machine B syncs again — should be stable, not push back uppercase
+    await syncWithRetry(machineB.stash);
+
+    // Machine A syncs again — should be stable
+    await syncWithRetry(machineA.stash);
+
+    // Verify remote has settled on lowercase
+    assert.equal(await remoteFileExists(repo.fullName, "notes/draft.md"), true);
+    assert.equal(await remoteFileExists(repo.fullName, "Notes/draft.md"), false);
+    assert.equal(await readRemoteText(repo.fullName, "notes/draft.md"), "hello");
+
+    // Verify actual directory casing on disk (not just content, which
+    // succeeds case-insensitively on macOS)
+    const { readdirSync } = await import("node:fs");
+    const machineADirs = readdirSync(machineA.dir).filter(
+      (e) => e.toLowerCase() === "notes",
+    );
+    const machineBDirs = readdirSync(machineB.dir).filter(
+      (e) => e.toLowerCase() === "notes",
+    );
+    console.log("Machine A dir casing:", machineADirs);
+    console.log("Machine B dir casing:", machineBDirs);
+
+    // Both machines should have lowercase "notes" on disk
+    assert.deepEqual(machineADirs, ["notes"]);
+    assert.deepEqual(machineBDirs, ["notes"]);
+
+    // Verify both snapshots agree
+    const snapshotA = JSON.parse(
+      await readFile(join(machineA.dir, ".stash", "snapshot.json"), "utf8"),
+    );
+    const snapshotB = JSON.parse(
+      await readFile(join(machineB.dir, ".stash", "snapshot.json"), "utf8"),
+    );
+    assert.deepEqual(snapshotA, snapshotB);
+    assert.ok(snapshotA["notes/draft.md"]);
+    assert.equal(snapshotA["Notes/draft.md"], undefined);
+  } finally {
+    if (repo) await deleteRepo(repo.fullName);
+    await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+  }
+});
+
 test("scenario 36: case-only rename syncs to remote and back", E2E_OPTIONS, async () => {
   let repo: RepoInfo | null = null;
   const dirs: string[] = [];
