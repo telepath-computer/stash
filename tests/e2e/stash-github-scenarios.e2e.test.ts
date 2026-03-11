@@ -481,6 +481,35 @@ test("scenario 8b: fresh stash pulls nested dirs from non-stash repo", E2E_OPTIO
   }
 });
 
+test("scenario 8c: new machine joins existing stash with nested dirs", E2E_OPTIONS, async () => {
+  let repo: RepoInfo | null = null;
+  const dirs: string[] = [];
+  try {
+    repo = await createRepo();
+    const machineADir = await makeTempDir("machine-a");
+    dirs.push(machineADir);
+    const machineA = await createMachine(machineADir, repo.fullName, { github: { token: token! } });
+    await writeLocalFiles(machineADir, {
+      "readme.md": "hello",
+      "docs/guide.md": "guide",
+      "docs/deep/nested.md": "deep",
+    });
+    await syncWithRetry(machineA.stash);
+
+    const machineBDir = await makeTempDir("machine-b");
+    dirs.push(machineBDir);
+    const machineB = await createMachine(machineBDir, repo.fullName, { github: { token: token! } });
+    await syncWithRetry(machineB.stash);
+
+    assert.equal(await readFile(join(machineBDir, "readme.md"), "utf8"), "hello");
+    assert.equal(await readFile(join(machineBDir, "docs/guide.md"), "utf8"), "guide");
+    assert.equal(await readFile(join(machineBDir, "docs/deep/nested.md"), "utf8"), "deep");
+  } finally {
+    if (repo) await deleteRepo(repo.fullName);
+    await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+  }
+});
+
 test("scenario 9: first sync merges when local and remote both populated", E2E_OPTIONS, async () => {
   let repo: RepoInfo | null = null;
   const dirs: string[] = [];
