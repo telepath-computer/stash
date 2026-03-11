@@ -694,6 +694,9 @@ export class Stash extends Emitter<StashEvents> {
     const segments = relPath.split("/");
     let current = this.dir;
     for (const segment of segments) {
+      if (!existsSync(current)) {
+        return false;
+      }
       const entries = readdirSync(current);
       const actual = entries.find((entry) => entry.toLowerCase() === segment.toLowerCase());
       if (!actual || actual !== segment) {
