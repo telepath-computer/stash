@@ -197,6 +197,18 @@ async function remoteFileExists(repo: string, path: string): Promise<boolean> {
   return true;
 }
 
+async function remoteFileExistsRetry(repo: string, path: string, attempts = 5): Promise<boolean> {
+  for (let i = 0; i < attempts; i += 1) {
+    if (await remoteFileExists(repo, path)) {
+      return true;
+    }
+    if (i < attempts - 1) {
+      await sleep(1_000);
+    }
+  }
+  return false;
+}
+
 async function readRemoteText(repo: string, path: string): Promise<string> {
   const response = await githubRequest(
     "GET",
@@ -935,7 +947,7 @@ test("scenario 32: first sync with identical local and remote content skips redu
     await syncWithRetry(stash);
 
     assert.equal(await readFile(join(machine, "hello.md"), "utf8"), "hello");
-    assert.equal(await remoteFileExists(repo.fullName, ".stash/snapshot.json"), true);
+    assert.equal(await remoteFileExistsRetry(repo.fullName, ".stash/snapshot.json"), true);
     assert.equal(await readRemoteText(repo.fullName, "hello.md"), "hello");
 
     const localSnapshot = JSON.parse(
