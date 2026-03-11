@@ -456,6 +456,31 @@ test("scenario 8: first sync pulls remote files to empty local", E2E_OPTIONS, as
   }
 });
 
+test("scenario 8b: fresh stash pulls nested dirs from non-stash repo", E2E_OPTIONS, async () => {
+  let repo: RepoInfo | null = null;
+  const dirs: string[] = [];
+  try {
+    repo = await createRepo();
+    await upsertRemoteFile(repo.fullName, "readme.md", "hello");
+    await upsertRemoteFile(repo.fullName, "docs/guide.md", "guide content");
+    await upsertRemoteFile(repo.fullName, "docs/deep/nested.md", "deep content");
+
+    const machine = await makeTempDir("fresh-pull-nested");
+    dirs.push(machine);
+    const stash = await Stash.init(machine, { github: { token: token! } });
+    await stash.connect("github", { repo: repo.fullName });
+    await syncWithRetry(stash);
+
+    assert.equal(await readFile(join(machine, "readme.md"), "utf8"), "hello");
+    assert.equal(await readFile(join(machine, "docs/guide.md"), "utf8"), "guide content");
+    assert.equal(await readFile(join(machine, "docs/deep/nested.md"), "utf8"), "deep content");
+    assert.equal(existsSync(join(machine, ".stash", "snapshot.json")), true);
+  } finally {
+    if (repo) await deleteRepo(repo.fullName);
+    await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+  }
+});
+
 test("scenario 9: first sync merges when local and remote both populated", E2E_OPTIONS, async () => {
   let repo: RepoInfo | null = null;
   const dirs: string[] = [];
