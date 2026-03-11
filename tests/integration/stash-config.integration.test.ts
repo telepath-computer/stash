@@ -24,7 +24,19 @@ test("integration config: disconnect removes connection", async () => {
 });
 
 test("integration config: config getter merges global and local", async () => {
-  const { stash } = await makeStash({}, { globalConfig: { github: { token: "t" } } });
+  const { stash } = await makeStash(
+    {},
+    {
+      globalConfig: {
+        providers: {
+          github: { token: "t" },
+        },
+        background: {
+          stashes: [],
+        },
+      },
+    },
+  );
   await stash.connect("github", { repo: "r" });
   assert.deepEqual((stash as any).config, {
     github: { token: "t", repo: "r" },

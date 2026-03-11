@@ -11,10 +11,10 @@ npm install -g @telepath-computer/stash
 Set up GitHub access and connect the current directory:
 
 ```bash
+stash background install
 stash init
 stash setup github
-stash connect github --repo user/repo
-stash sync
+stash connect github --repo user/repo --background
 ```
 
 You can initialize a directory explicitly with `stash init`, or let `stash connect` create `.stash/` for you automatically.
@@ -31,21 +31,41 @@ You'll need a GitHub [personal access token](https://github.com/settings/tokens)
 ## Commands
 
 ```bash
+stash background install
+stash background add
 stash init
 stash setup github
-stash connect github --repo user/repo
+stash connect github --repo user/repo --background
 stash sync
 stash watch
+stash background status
 stash status
 stash disconnect github
+stash background remove
+stash background uninstall
 ```
 
 `stash watch` keeps the directory in sync continuously. Press `.` to trigger an immediate sync and `q` to quit.
+
+`stash background install` plus `stash connect --background` gives you boot-time background syncing managed by `launchd` on macOS or `systemd` on Linux.
 
 ## Config
 
 - Global config lives at `~/.stash/config.json` or `$XDG_CONFIG_HOME/stash/config.json`.
 - Per-stash connection config lives at `.stash/config.local.json` inside the synced directory.
+
+Example global config:
+
+```json
+{
+  "providers": {
+    "github": { "token": "ghp_..." }
+  },
+  "background": {
+    "stashes": ["/Users/me/notes"]
+  }
+}
+```
 
 ## Docs
 

@@ -1,6 +1,6 @@
 {
   "name": "@telepath-computer/stash",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "description": "Conflict-free synced folders",
   "type": "module",
   "main": "./dist/index.js",
@@ -39,7 +39,8 @@
     "@rupertsworld/disposable": "^0.1.0",
     "@rupertsworld/emitter": "^0.1.0",
     "commander": "^14.0.3",
-    "diff-match-patch": "^1.0.5"
+    "diff-match-patch": "^1.0.5",
+    "ora": "^9.3.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdir, mkdtemp, readFile, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Stash } from "../../src/stash.ts";
+import type { GlobalConfig } from "../../src/types.ts";
 import { hashBuffer } from "../../src/utils/hash.ts";
 
 const execFileAsync = promisify(execFile);
@@ -244,7 +245,7 @@ async function upsertRemoteFile(
 async function createMachine(
   dir: string,
   repo: string,
-  globalConfig: { github: { token: string } },
+  globalConfig: GlobalConfig,
 ): Promise<Machine> {
   const stash = await Stash.init(dir, globalConfig);
   await stash.connect("github", { repo });
@@ -260,7 +261,14 @@ async function setupTwoMachineBaseline(initialFiles: Record<string, string | Buf
   const repo = await createRepo();
   const machineADir = await makeTempDir("machine-a");
   const machineBDir = await makeTempDir("machine-b");
-  const globalConfig = { github: { token: token! } };
+  const globalConfig: GlobalConfig = {
+    providers: {
+      github: { token: token! },
+    },
+    background: {
+      stashes: [],
+    },
+  };
 
   const machineA = await createMachine(machineADir, repo.fullName, globalConfig);
   const machineB = await createMachine(machineBDir, repo.fullName, globalConfig);
@@ -304,7 +312,14 @@ test("scenario 3: setup stores provider credentials globally", E2E_OPTIONS, asyn
     });
     const configPath = join(xdg, "stash", "config.json");
     const config = JSON.parse(await readFile(configPath, "utf8"));
-    assert.deepEqual(config, { github: { token: "test-token" } });
+    assert.deepEqual(config, {
+      providers: {
+        github: { token: "test-token" },
+      },
+      background: {
+        stashes: [],
+      },
+    });
   } finally {
     await rm(dir, { recursive: true, force: true });
     await rm(xdg, { recursive: true, force: true });
@@ -340,7 +355,14 @@ test("scenario 5: connect auto-writes setup config when missing", E2E_OPTIONS, a
     });
 
     const globalConfig = JSON.parse(await readFile(join(xdg, "stash", "config.json"), "utf8"));
-    assert.deepEqual(globalConfig, { github: { token: "from-connect" } });
+    assert.deepEqual(globalConfig, {
+      providers: {
+        github: { token: "from-connect" },
+      },
+      background: {
+        stashes: [],
+      },
+    });
 
     const localConfig = JSON.parse(
       await readFile(join(dir, ".stash", "config.local.json"), "utf8"),
@@ -401,7 +423,14 @@ test("scenario 8: first sync pulls remote files to empty local", E2E_OPTIONS, as
 
     const machine = await makeTempDir("machine");
     dirs.push(machine);
-    const stash = await Stash.init(machine, { github: { token: token! } });
+    const stash = await Stash.init(machine, {
+      providers: {
+        github: { token: token! },
+      },
+      background: {
+        stashes: [],
+      },
+    });
     await stash.connect("github", { repo: repo.fullName });
     await syncWithRetry(stash);
 
@@ -426,7 +455,14 @@ test("scenario 8b: fresh stash pulls nested dirs from non-stash repo", E2E_OPTIO
 
     const machine = await makeTempDir("fresh-pull-nested");
     dirs.push(machine);
-    const stash = await Stash.init(machine, { github: { token: token! } });
+    const stash = await Stash.init(machine, {
+      providers: {
+        github: { token: token! },
+      },
+      background: {
+        stashes: [],
+      },
+    });
     await stash.connect("github", { repo: repo.fullName });
     await syncWithRetry(stash);
 
@@ -447,7 +483,14 @@ test("scenario 8c: new machine joins existing stash with nested dirs", E2E_OPTIO
     repo = await createRepo();
     const machineADir = await makeTempDir("machine-a");
     dirs.push(machineADir);
-    const machineA = await createMachine(machineADir, repo.fullName, { github: { token: token! } });
+    const machineA = await createMachine(machineADir, repo.fullName, {
+      providers: {
+        github: { token: token! },
+      },
+      background: {
+        stashes: [],
+      },
+    });
     await writeLocalFiles(machineADir, {
       "readme.md": "hello",
       "docs/guide.md": "guide",
@@ -457,7 +500,14 @@ test("scenario 8c: new machine joins existing stash with nested dirs", E2E_OPTIO
 
     const machineBDir = await makeTempDir("machine-b");
     dirs.push(machineBDir);
-    const machineB = await createMachine(machineBDir, repo.fullName, { github: { token: token! } });
+    const machineB = await createMachine(machineBDir, repo.fullName, {
+      providers: {
+        github: { token: token! },
+      },
+      background: {
+        stashes: [],
+      },
+    });
     await syncWithRetry(machineB.stash);
 
     assert.equal(await readFile(join(machineBDir, "readme.md"), "utf8"), "hello");
@@ -482,7 +532,14 @@ test(
       const machine = await makeTempDir("machine");
       dirs.push(machine);
       await writeFile(join(machine, "local.md"), "local content", "utf8");
-      const stash = await Stash.init(machine, { github: { token: token! } });
+      const stash = await Stash.init(machine, {
+        providers: {
+          github: { token: token! },
+        },
+        background: {
+          stashes: [],
+        },
+      });
       await stash.connect("github", { repo: repo.fullName });
       await syncWithRetry(stash);
 
@@ -735,7 +792,14 @@ test("scenario 22: sync with no connection is a no-op", E2E_OPTIONS, async () =>
   const dir = await makeTempDir("no-connection");
   try {
     await writeFile(join(dir, "hello.md"), "hello", "utf8");
-    const stash = await Stash.init(dir, { github: { token: token! } });
+    const stash = await Stash.init(dir, {
+      providers: {
+        github: { token: token! },
+      },
+      background: {
+        stashes: [],
+      },
+    });
     await syncWithRetry(stash);
     assert.equal(await readFile(join(dir, "hello.md"), "utf8"), "hello");
   } finally {
@@ -866,7 +930,14 @@ test("scenario 27: status before first sync has null lastSync", E2E_OPTIONS, asy
     const dir = await makeTempDir("status-first");
     dirs.push(dir);
     await writeFile(join(dir, "hello.md"), "hello", "utf8");
-    const stash = await Stash.init(dir, { github: { token: token! } });
+    const stash = await Stash.init(dir, {
+      providers: {
+        github: { token: token! },
+      },
+      background: {
+        stashes: [],
+      },
+    });
     await stash.connect("github", { repo: repo.fullName });
     const status = stash.status();
     assert.deepEqual(status.added, ["hello.md"]);
@@ -967,7 +1038,14 @@ test(
       const machine = await makeTempDir("identical-first-sync");
       dirs.push(machine);
       await writeLocalFiles(machine, { "hello.md": "hello" });
-      const stash = await Stash.init(machine, { github: { token: token! } });
+      const stash = await Stash.init(machine, {
+        providers: {
+          github: { token: token! },
+        },
+        background: {
+          stashes: [],
+        },
+      });
       await stash.connect("github", { repo: repo.fullName });
       await syncWithRetry(stash);
 
@@ -1078,6 +1156,68 @@ test("scenario 36: case-only rename syncs to remote and back", E2E_OPTIONS, asyn
     // Machine B: sync should pull the rename
     await syncWithRetry(machineB.stash);
     assert.equal(await readFile(join(machineB.dir, "notes", "arabella.md"), "utf8"), "hello");
+  } finally {
+    if (repo) await deleteRepo(repo.fullName);
+    await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+  }
+});
+
+test("e2e: background daemon syncs a registered stash and writes status.json", E2E_OPTIONS, async () => {
+  let repo: RepoInfo | null = null;
+  const dirs: string[] = [];
+
+  try {
+    repo = await createRepo();
+    const dir = await makeTempDir("daemon-e2e");
+    const xdgDir = await makeTempDir("daemon-e2e-xdg");
+    dirs.push(dir, xdgDir);
+
+    const globalConfig: GlobalConfig = {
+      providers: { github: { token: token! } },
+      background: { stashes: [dir] },
+    };
+
+    const stash = await Stash.init(dir, globalConfig);
+    await stash.connect("github", { repo: repo.fullName });
+    await writeLocalFiles(dir, { "daemon-test.txt": "hello from daemon" });
+
+    const configDir = join(xdgDir, "stash");
+    await mkdir(configDir, { recursive: true });
+    await writeFile(join(configDir, "config.json"), JSON.stringify(globalConfig, null, 2), "utf8");
+
+    const daemon = spawn("node", [CLI_PATH, "background", "watch"], {
+      env: { ...process.env, XDG_CONFIG_HOME: xdgDir },
+      stdio: "pipe",
+    });
+
+    const statusPath = join(dir, ".stash", "status.json");
+    let synced = false;
+    for (let i = 0; i < 30; i += 1) {
+      await sleep(2_000);
+      if (existsSync(statusPath)) {
+        const status = JSON.parse(await readFile(statusPath, "utf8"));
+        if (status.kind === "synced" || status.kind === "checked") {
+          synced = true;
+          break;
+        }
+      }
+    }
+
+    daemon.kill("SIGTERM");
+    await new Promise<void>((resolve) => daemon.on("exit", () => resolve()));
+
+    assert.equal(synced, true, "daemon should have synced the stash");
+
+    const status = JSON.parse(await readFile(statusPath, "utf8"));
+    assert.ok(status.lastSync, "status should have a lastSync timestamp");
+
+    const logPath = join(dir, ".stash", "sync.log");
+    assert.equal(existsSync(logPath), true, "sync.log should exist");
+    const log = await readFile(logPath, "utf8");
+    assert.ok(log.length > 0, "sync.log should not be empty");
+
+    assert.equal(await remoteFileExists(repo.fullName, "daemon-test.txt"), true);
+    assert.equal(await readRemoteText(repo.fullName, "daemon-test.txt"), "hello from daemon");
   } finally {
     if (repo) await deleteRepo(repo.fullName);
     await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));

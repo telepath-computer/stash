@@ -49,3 +49,21 @@ test("cli init on existing stash is a no-op", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("cli sync failure sets exit code 1 and prints error once", async () => {
+  const dir = await makeTempDir("cli-sync-fail");
+  try {
+    const result = await execFileAsync("node", [CLI_PATH, "sync"], {
+      cwd: dir,
+      env: process.env,
+    }).catch((error) => error as { stdout: string; stderr: string; code: number });
+
+    assert.equal(result.code, 1, "process should exit with code 1");
+
+    const combined = (result.stdout ?? "") + (result.stderr ?? "");
+    const errorOccurrences = combined.split("sync failed").length - 1;
+    assert.equal(errorOccurrences <= 1, true, `error should appear at most once, got: ${combined}`);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

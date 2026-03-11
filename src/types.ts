@@ -53,7 +53,16 @@ export interface StatusResult {
 }
 
 export type ConnectionConfig = Record<string, string>;
-export type GlobalConfig = Record<string, Record<string, string>>;
+export type ProviderConfig = Record<string, Record<string, string>>;
+
+export interface BackgroundConfig {
+  stashes: string[];
+}
+
+export interface GlobalConfig {
+  providers: ProviderConfig;
+  background: BackgroundConfig;
+}
 
 export type ProviderClass = {
   spec: ProviderSpec;

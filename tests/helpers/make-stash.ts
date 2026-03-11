@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { normalizeGlobalConfig } from "../../src/global-config.ts";
 import { Stash } from "../../src/stash.ts";
 import type { GlobalConfig, ProviderClass, SnapshotEntry } from "../../src/types.ts";
 
@@ -30,11 +31,12 @@ export async function makeStash(
   },
 ): Promise<{ stash: Stash; dir: string }> {
   const dir = await makeTempDir();
+  const globalConfig = normalizeGlobalConfig(opts?.globalConfig ?? {});
   if (files) {
     await writeFiles(dir, files);
   }
 
-  await Stash.init(dir, opts?.globalConfig ?? {}, {
+  await Stash.init(dir, globalConfig, {
     providers: opts?.providers,
   });
 
@@ -54,7 +56,7 @@ export async function makeStash(
     }
   }
 
-  const loaded = await Stash.load(dir, opts?.globalConfig ?? {}, {
+  const loaded = await Stash.load(dir, globalConfig, {
     providers: opts?.providers,
   });
   return { stash: loaded, dir };
