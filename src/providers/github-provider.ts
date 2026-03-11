@@ -418,7 +418,7 @@ export class GitHubProvider implements Provider {
     return response;
   }
 
-  private async ensureOk(response: Response, message: string): Promise<void> {
+  private ensureOk(response: Response, message: string): void {
     if (response.ok) {
       return;
     }

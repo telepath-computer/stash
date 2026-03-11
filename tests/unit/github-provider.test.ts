@@ -710,6 +710,31 @@ test("GitHubProvider errors: GraphQL failures use concise status text", async ()
   }
 });
 
+test("GitHubProvider errors: empty statusText falls back to numeric code only", async () => {
+  const api = new MockGitHubAPI();
+  const cleanup = api
+    .on("GET", "/repos/user/repo/contents/file.bin?ref=main", {
+      status: 503,
+      statusText: "",
+      body: "<!DOCTYPE html><html><body>outage</body></html>",
+    })
+    .install();
+
+  try {
+    const provider = makeProvider();
+    await assert.rejects(provider.get("file.bin"), (error: unknown) => {
+      assert.equal(error instanceof Error, true);
+      const message = (error as Error).message;
+      assert.equal(message, "Failed to fetch raw content for file.bin (503)");
+      assert.equal(message.includes("<!DOCTYPE html>"), false);
+      return true;
+    });
+    api.assertDone();
+  } finally {
+    cleanup();
+  }
+});
+
 test("GitHubProvider errors: network failure during fetch leaves state unset", async () => {
   const original = globalThis.fetch;
   globalThis.fetch = async () => {
