@@ -1,6 +1,8 @@
 export { Stash } from "./stash.ts";
+export type { StashEvents } from "./stash.ts";
 export { GitHubProvider } from "./providers/github-provider.ts";
 export { PushConflictError, SyncLockError } from "./errors.ts";
+export type { Disposable } from "./emitter.ts";
 export {
   getGlobalConfigPath,
   readGlobalConfig,
@@ -14,6 +16,7 @@ export type {
   FileState,
   GlobalConfig,
   Provider,
+  ProviderClass,
   ProviderSpec,
   PushPayload,
   SnapshotEntry,

@@ -16,7 +16,7 @@
     "prepublishOnly": "npm run build",
     "stash": "node ./src/cli.ts",
     "test": "node --test tests/unit/*.test.ts tests/integration/*.test.ts",
-    "test:e2e": "node --test tests/e2e/*.test.ts",
+    "test:e2e": "node --env-file-if-exists=.env --test tests/e2e/*.test.ts",
     "test:all": "npm test && npm run test:e2e"
   },
   "keywords": [
@@ -27,8 +27,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/telepath-computer/stash.git",
-    "directory": "code"
+    "url": "git+https://github.com/telepath-computer/stash.git"
   },
   "license": "ISC",
   "dependencies": {

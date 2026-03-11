@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { Command, Option } from "commander";
 import { input, password } from "@inquirer/prompts";
 import { readGlobalConfig, writeGlobalConfig } from "./global-config.ts";
@@ -57,6 +59,13 @@ async function runSetup(
   globalConfig[providerName] = values;
   await writeGlobalConfig(globalConfig);
   console.log(`Configured ${providerName}.`);
+}
+
+async function runInit(): Promise<void> {
+  const dir = process.cwd();
+  const alreadyInitialized = existsSync(join(dir, ".stash"));
+  await Stash.init(dir, await readGlobalConfig());
+  console.log(alreadyInitialized ? "Already initialized." : "Initialized stash.");
 }
 
 async function runConnect(
@@ -167,6 +176,7 @@ async function main(argv = process.argv): Promise<void> {
       await runDisconnect(providerName);
     });
 
+  program.command("init").description("Initialize the current directory as a stash").action(runInit);
   program.command("sync").description("Sync local files with connections").action(runSync);
   program.command("watch").description("Watch and sync continuously").action(runWatch);
   program.command("status").description("Show local stash status").action(runStatus);

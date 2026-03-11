@@ -1,3 +1,6 @@
 .claude
 .env
 .tmp
+node_modules/
+dist/
+.scratch/

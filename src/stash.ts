@@ -36,7 +36,7 @@ import { hashBuffer, hashText } from "./utils/hash.ts";
 import { isTrackedPath } from "./utils/is-tracked-path.ts";
 import { isValidText } from "./utils/text.ts";
 
-type StashEvents = {
+export type StashEvents = {
   mutation: FileMutation;
 };
 
@@ -89,7 +89,7 @@ export class Stash extends Emitter<StashEvents> {
   ): Promise<Stash> {
     const stashDir = join(dir, ".stash");
     if (!existsSync(stashDir)) {
-      throw new Error("This directory is not a stash. Run `stash init` first.");
+      throw new Error("This directory is not a stash. Run `stash init` or `stash connect <provider>` first.");
     }
 
     const configPath = join(stashDir, "config.local.json");
@@ -690,6 +690,9 @@ export class Stash extends Emitter<StashEvents> {
     const dirSegments = segments.slice(0, -1);
     let current = this.dir;
     for (const segment of dirSegments) {
+      if (!existsSync(current)) {
+        break;
+      }
       const entries = readdirSync(current);
       const actual = entries.find(
         (entry) => entry.toLowerCase() === segment.toLowerCase(),

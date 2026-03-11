@@ -1,89 +1,81 @@
 # Stash
 
-Conflict-free synced folders. Multiple people and machines edit the same files — changes merge automatically, conflict-free.
+Conflict-free synced folders. Multiple people, agents, and machines can edit the same directory, then converge with a single `stash sync`.
 
-## Quick start
+## Quick Start
 
-```
+```bash
 npm install -g @telepath-computer/stash
 ```
 
-Set up a stash and connect it to a GitHub repo:
+Set up GitHub access and connect the current directory:
 
-```
-stash setup github          # one-time: provide your GitHub token
+```bash
+stash init
+stash setup github
 stash connect github --repo user/repo
-```
-
-You'll need a GitHub [personal access token](https://github.com/settings/tokens). A classic token needs the `repo` scope. A fine-grained token needs **Contents: Read and write** permission on the target repo.
-
-Now sync:
-
-```
 stash sync
 ```
 
-Local changes are pushed, remote changes are pulled, concurrent edits are merged. There's no separate push or pull — sync does both.
+You can initialize a directory explicitly with `stash init`, or let `stash connect` create `.stash/` for you automatically.
 
-### Watch
+You'll need a GitHub [personal access token](https://github.com/settings/tokens). A classic token needs the `repo` scope. A fine-grained token needs **Contents: Read and write** permission on the target repo.
 
-```
+## How It Works
+
+- `stash sync` pushes local changes, pulls remote changes, and merges concurrent edits in one operation.
+- Text files are merged automatically. Different-region edits combine cleanly; overlapping edits preserve both sides instead of silently dropping content.
+- Binary files use last-modified-wins.
+- All files in the stash directory are tracked automatically except dotfiles, dot-directories, symlinks, and local-only `.stash/` metadata.
+
+## Commands
+
+```bash
+stash init
+stash setup github
+stash connect github --repo user/repo
+stash sync
 stash watch
-```
-
-Keeps your stash in sync continuously. Local edits are pushed, remote changes are pulled, and merges happen automatically in the background. Press `.` to sync immediately, `q` to quit.
-
-### Other commands
-
-```
-stash setup github    # update your GitHub token
-stash status          # show connections and local changes
+stash status
 stash disconnect github
 ```
 
-### Config
+`stash watch` keeps the directory in sync continuously. Press `.` to trigger an immediate sync and `q` to quit.
 
-Global config (GitHub token) is stored at `~/.stash/config.json` (or `$XDG_CONFIG_HOME/stash/config.json`). Per-stash config (which repo) is in `.stash/config.local.json` inside the synced directory.
+## Config
 
-## How merging works
+- Global config lives at `~/.stash/config.json` or `$XDG_CONFIG_HOME/stash/config.json`.
+- Per-stash connection config lives at `.stash/config.local.json` inside the synced directory.
 
-The merge algorithm is the same as the one used by Obsidian Sync.
+## Docs
 
-Text files are merged automatically using three-way merge. Edits in different regions combine cleanly. Overlapping edits preserve both versions — no data is silently lost.
-
-Binary files use last-modified-wins.
-
-## File tracking
-
-All files in the stash directory are tracked automatically. Dotfiles, dot-directories, and symlinks are ignored.
+- `docs/api.md` - developer-facing `Stash` and provider contracts
+- `docs/architecture.md` - core components and repo boundaries
+- `docs/sync.md` - sync lifecycle, locking, drift, and snapshot semantics
+- `docs/reconciliation.md` - merge and file-resolution rules
+- `docs/cli.md` - user-facing CLI behavior
+- `docs/providers/github.md` - GitHub remote contract
+- `docs/development.md` - local development and testing
 
 ## FAQ
 
 **Will stash delete or overwrite my existing files?**
 
-No. If you point stash at a directory that already has files, or connect it to a repo that already has content, stash merges both sides on first sync. Nothing is deleted. If both local and remote have the same file with different content, the changes are merged automatically. The merged result becomes the baseline for future syncs.
+Not blindly. On first sync, local and remote content are reconciled rather than replaced wholesale. The result becomes the baseline for future syncs.
 
 **Can I use the same repo with both stash and git?**
 
-Yes, but not on the same machine. Stash syncs the working tree directly to `main` via the GitHub API — it doesn't use or know about local git state. If you also have a `.git` directory locally, switching branches will cause stash to see all the changed files and sync them to `main`. Don't use both in the same directory.
-
-On the remote side, the repo is a normal git repo. Other people can clone it, push to it, make branches, open PRs — all the usual git workflows. Stash commits are regular git commits, so they interleave cleanly. If a git push and a stash sync happen at the same time, stash detects the conflict, re-fetches, re-merges, and retries automatically.
-
-In short: each machine should be either a stash or a git checkout, not both.
+Yes, but not on the same machine and directory. Stash syncs the working tree directly to `main` through the GitHub API and does not understand local git state.
 
 **Does stash use branches or PRs?**
 
-No. Stash only reads and writes the `main` branch. It doesn't create feature branches, pull requests, or tags.
-
-**How is this different from git?**
-
-Stash is designed for continuous, automatic syncing — like Dropbox or Obsidian Sync, but backed by a git repo. There's no staging, no commit messages to write, and no merge conflicts to resolve manually. Under the hood it uses its own three-way merge algorithm (diff-match-patch) instead of git's merge, so concurrent edits are combined automatically without conflict markers.
+No. Stash reads and writes the `main` branch directly.
 
 ## Development
 
-Requires Node.js v22.6+. From the `code/` directory:
+Requires Node.js v22.6+.
 
-```
+```bash
 npm install
 npm link
 npm test

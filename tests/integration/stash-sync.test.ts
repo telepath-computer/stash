@@ -75,6 +75,23 @@ test("sync: first sync pulls all remote files", async () => {
   assert.deepEqual(snapshot, fake.snapshot);
 });
 
+test("sync: pulls remote files in nested directories when parent directories do not yet exist", async () => {
+  const fake = new FakeProvider({
+    files: {
+      "a/b/c.md": "deep",
+    },
+    snapshot: {
+      "a/b/c.md": { hash: hashBuffer(Buffer.from("deep", "utf8")) },
+    },
+  });
+  const { stash, dir } = await makeStash({}, { providers: fakeRegistry(fake) });
+  await stash.connect("fake", { repo: "r" });
+
+  await stash.sync();
+
+  assert.equal(await readFile(join(dir, "a", "b", "c.md"), "utf8"), "deep");
+});
+
 test("sync: merge cycle preserves both edits", async () => {
   const fake = new FakeProvider();
   const { stash, dir } = await makeStash(
