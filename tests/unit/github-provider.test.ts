@@ -645,6 +645,71 @@ test("GitHubProvider errors: auth 401 throws descriptive error", async () => {
   }
 });
 
+test("GitHubProvider errors: REST failures use concise status text", async () => {
+  const api = new MockGitHubAPI();
+  const cleanup = api
+    .on("GET", "/repos/user/repo/contents/file.bin?ref=main", {
+      status: 503,
+      statusText: "Service Unavailable",
+      headers: { "content-type": "text/html" },
+      body: "<!DOCTYPE html><html><body>We have issues responding to your request</body></html>",
+    })
+    .install();
+
+  try {
+    const provider = makeProvider();
+    await assert.rejects(provider.get("file.bin"), (error: unknown) => {
+      assert.equal(error instanceof Error, true);
+      const message = (error as Error).message;
+      assert.equal(message, "Failed to fetch raw content for file.bin (503 Service Unavailable)");
+      assert.equal(message.includes("<!DOCTYPE html>"), false);
+      assert.equal(message.includes("We have issues responding to your request"), false);
+      return true;
+    });
+    api.assertDone();
+  } finally {
+    cleanup();
+  }
+});
+
+test("GitHubProvider errors: GraphQL failures use concise status text", async () => {
+  const remoteSnapshot = {
+    "hello.md": { hash: "sha256-new" },
+  };
+  const api = new MockGitHubAPI();
+  const cleanup = api
+    .on("GET", "/repos/user/repo/branches/main", {
+      status: 200,
+      body: { commit: { sha: "head", commit: { tree: { sha: "tree" } } } },
+    })
+    .on("GET", "/repos/user/repo/contents/.stash/snapshot.json?ref=main", {
+      status: 200,
+      body: { content: b64(JSON.stringify(remoteSnapshot)) },
+    })
+    .onPost("/graphql", () => ({
+      status: 503,
+      statusText: "Service Unavailable",
+      headers: { "content-type": "text/html" },
+      body: "<!DOCTYPE html><html><body>We have issues responding to your request</body></html>",
+    }))
+    .install();
+
+  try {
+    const provider = makeProvider();
+    await assert.rejects(provider.fetch({ "hello.md": { hash: "sha256-old" } }), (error: unknown) => {
+      assert.equal(error instanceof Error, true);
+      const message = (error as Error).message;
+      assert.equal(message, "Failed to fetch GraphQL blobs (503 Service Unavailable)");
+      assert.equal(message.includes("<!DOCTYPE html>"), false);
+      assert.equal(message.includes("We have issues responding to your request"), false);
+      return true;
+    });
+    api.assertDone();
+  } finally {
+    cleanup();
+  }
+});
+
 test("GitHubProvider errors: network failure during fetch leaves state unset", async () => {
   const original = globalThis.fetch;
   globalThis.fetch = async () => {

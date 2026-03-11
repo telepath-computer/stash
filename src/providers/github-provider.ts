@@ -422,8 +422,9 @@ export class GitHubProvider implements Provider {
     if (response.ok) {
       return;
     }
-    const text = await response.text();
-    throw new Error(`${message} (${response.status}): ${text}`);
+    const statusText = response.statusText.trim();
+    const status = statusText.length > 0 ? `${response.status} ${statusText}` : `${response.status}`;
+    throw new Error(`${message} (${status})`);
   }
 
   private async fetchBlobMetadata(paths: string[]): Promise<Map<string, BlobResult>> {

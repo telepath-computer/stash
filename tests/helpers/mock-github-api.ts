@@ -2,6 +2,7 @@ type PathMatcher = string | RegExp;
 
 export interface MockResponse {
   status: number;
+  statusText?: string;
   body?: unknown;
   headers?: Record<string, string>;
 }
@@ -15,16 +16,29 @@ type Entry = {
 
 function toResponse(res: MockResponse): Response {
   if (res.body === undefined) {
-    return new Response(null, { status: res.status, headers: res.headers });
+    return new Response(null, {
+      status: res.status,
+      statusText: res.statusText,
+      headers: res.headers,
+    });
   }
   if (Buffer.isBuffer(res.body)) {
-    return new Response(res.body, { status: res.status, headers: res.headers });
+    return new Response(res.body, {
+      status: res.status,
+      statusText: res.statusText,
+      headers: res.headers,
+    });
   }
   if (typeof res.body === "string") {
-    return new Response(res.body, { status: res.status, headers: res.headers });
+    return new Response(res.body, {
+      status: res.status,
+      statusText: res.statusText,
+      headers: res.headers,
+    });
   }
   return new Response(JSON.stringify(res.body), {
     status: res.status,
+    statusText: res.statusText,
     headers: { "content-type": "application/json", ...(res.headers ?? {}) },
   });
 }
