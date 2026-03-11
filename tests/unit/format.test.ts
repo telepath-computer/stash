@@ -10,32 +10,17 @@ import {
 } from "../../src/ui/format.ts";
 
 test("format: mutationDirection maps push-to-remote mutations", () => {
-  assert.equal(
-    mutationDirection({ path: "a.md", disk: "skip", remote: "write" }),
-    "up",
-  );
-  assert.equal(
-    mutationDirection({ path: "a.md", disk: "skip", remote: "delete" }),
-    "up",
-  );
+  assert.equal(mutationDirection({ path: "a.md", disk: "skip", remote: "write" }), "up");
+  assert.equal(mutationDirection({ path: "a.md", disk: "skip", remote: "delete" }), "up");
 });
 
 test("format: mutationDirection maps pull-from-remote mutations", () => {
-  assert.equal(
-    mutationDirection({ path: "a.md", disk: "write", remote: "skip" }),
-    "down",
-  );
-  assert.equal(
-    mutationDirection({ path: "a.md", disk: "delete", remote: "skip" }),
-    "down",
-  );
+  assert.equal(mutationDirection({ path: "a.md", disk: "write", remote: "skip" }), "down");
+  assert.equal(mutationDirection({ path: "a.md", disk: "delete", remote: "skip" }), "down");
 });
 
 test("format: mutationDirection maps merge mutations", () => {
-  assert.equal(
-    mutationDirection({ path: "a.md", disk: "write", remote: "write" }),
-    "both",
-  );
+  assert.equal(mutationDirection({ path: "a.md", disk: "write", remote: "write" }), "both");
 });
 
 test("format: directionArrow renders arrows", () => {
@@ -68,10 +53,7 @@ test("format: formatSummary returns empty string for empty input", () => {
 });
 
 test("format: formatSummary omits skip/skip mutations", () => {
-  assert.equal(
-    formatSummary([{ path: "a.md", disk: "skip", remote: "skip" }]),
-    "",
-  );
+  assert.equal(formatSummary([{ path: "a.md", disk: "skip", remote: "skip" }]), "");
 });
 
 test("format: formatTimeAgo renders expected buckets", () => {

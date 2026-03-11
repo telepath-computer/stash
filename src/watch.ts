@@ -89,7 +89,9 @@ export async function watch(stash: Stash, options: WatchOptions = {}): Promise<v
       return;
     }
     if (status.kind === "error") {
-      line.update(`${red("✗")} sync failed: ${status.message} ${dim("·")} ${dim(`retrying in ${formatCountdown(status.nextCheck)}`)}`);
+      line.update(
+        `${red("✗")} sync failed: ${status.message} ${dim("·")} ${dim(`retrying in ${formatCountdown(status.nextCheck)}`)}`,
+      );
       return;
     }
     line.update(`${green("●")} ${dim("up to date")} ${dim("·")} ${countdown}`);
@@ -266,11 +268,13 @@ export async function watch(stash: Stash, options: WatchOptions = {}): Promise<v
       break;
     }
   });
-  resources.add(asDisposable(() => {
-    if (subscription) {
-      void subscription.unsubscribe();
-    }
-  }));
+  resources.add(
+    asDisposable(() => {
+      if (subscription) {
+        void subscription.unsubscribe();
+      }
+    }),
+  );
 
   if (interactive) {
     stdin.setRawMode?.(true);

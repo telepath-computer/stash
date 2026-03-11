@@ -8,9 +8,7 @@ test("connect writes provider connection config", async () => {
   const { stash, dir } = await makeStash();
   await stash.connect("github", { repo: "user/repo" });
 
-  const config = JSON.parse(
-    await readFile(join(dir, ".stash", "config.local.json"), "utf8"),
-  );
+  const config = JSON.parse(await readFile(join(dir, ".stash", "config.local.json"), "utf8"));
   assert.deepEqual(config, {
     connections: {
       github: { repo: "user/repo" },
@@ -23,9 +21,7 @@ test("disconnect removes provider connection config", async () => {
   await stash.connect("github", { repo: "user/repo" });
   await stash.disconnect("github");
 
-  const config = JSON.parse(
-    await readFile(join(dir, ".stash", "config.local.json"), "utf8"),
-  );
+  const config = JSON.parse(await readFile(join(dir, ".stash", "config.local.json"), "utf8"));
   assert.deepEqual(config, { connections: {} });
 });
 

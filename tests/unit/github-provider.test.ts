@@ -15,10 +15,7 @@ function makeProvider(): GitHubProvider {
 }
 
 test("GitHubProvider constructor validates owner/repo format", () => {
-  assert.throws(
-    () => new GitHubProvider({ token: "t", repo: "a/b/c" }),
-    /owner\/repo/i,
-  );
+  assert.throws(() => new GitHubProvider({ token: "t", repo: "a/b/c" }), /owner\/repo/i);
 });
 
 test("GitHubProvider.fetch: empty repo returns empty changeset", async () => {
@@ -78,10 +75,7 @@ test("GitHubProvider.fetch: diffs remote snapshot and fetches changed text", asy
     };
     const changeSet = await provider.fetch(localSnapshot);
     assert.equal(changeSet.modified.get("hello.md")?.type, "text");
-    assert.equal(
-      (changeSet.modified.get("hello.md") as any)?.content,
-      "hello from remote",
-    );
+    assert.equal((changeSet.modified.get("hello.md") as any)?.content, "hello from remote");
     assert.deepEqual(changeSet.deleted, ["old.md"]);
     assert.deepEqual(changeSet.added.get("image.png"), {
       type: "binary",
@@ -472,12 +466,7 @@ test("GitHubProvider.push: binary content uses blob API", async () => {
     (provider as any).baseTreeSha = "tree";
 
     await provider.push({
-      files: new Map([
-        [
-          "image.png",
-          () => Readable.from(Buffer.from([1, 2, 3])),
-        ],
-      ]),
+      files: new Map([["image.png", () => Readable.from(Buffer.from([1, 2, 3]))]]),
       deletions: [],
       snapshot: { "image.png": { hash: "h", modified: 1 } },
     });
@@ -696,14 +685,17 @@ test("GitHubProvider errors: GraphQL failures use concise status text", async ()
 
   try {
     const provider = makeProvider();
-    await assert.rejects(provider.fetch({ "hello.md": { hash: "sha256-old" } }), (error: unknown) => {
-      assert.equal(error instanceof Error, true);
-      const message = (error as Error).message;
-      assert.equal(message, "Failed to fetch GraphQL blobs (503 Service Unavailable)");
-      assert.equal(message.includes("<!DOCTYPE html>"), false);
-      assert.equal(message.includes("We have issues responding to your request"), false);
-      return true;
-    });
+    await assert.rejects(
+      provider.fetch({ "hello.md": { hash: "sha256-old" } }),
+      (error: unknown) => {
+        assert.equal(error instanceof Error, true);
+        const message = (error as Error).message;
+        assert.equal(message, "Failed to fetch GraphQL blobs (503 Service Unavailable)");
+        assert.equal(message.includes("<!DOCTYPE html>"), false);
+        assert.equal(message.includes("We have issues responding to your request"), false);
+        return true;
+      },
+    );
     api.assertDone();
   } finally {
     cleanup();

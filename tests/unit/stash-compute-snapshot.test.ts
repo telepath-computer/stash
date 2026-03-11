@@ -5,10 +5,9 @@ import { makeStash } from "../helpers/make-stash.ts";
 
 test("computeSnapshot: adds new text file hash", async () => {
   const { stash } = await makeStash();
-  const result = (stash as any).computeSnapshot(
-    { "a.md": { hash: "sha256-old" } },
-    [{ path: "b.md", disk: "skip", remote: "write", content: "hello" }],
-  );
+  const result = (stash as any).computeSnapshot({ "a.md": { hash: "sha256-old" } }, [
+    { path: "b.md", disk: "skip", remote: "write", content: "hello" },
+  ]);
 
   assert.deepEqual(result["a.md"], { hash: "sha256-old" });
   assert.deepEqual(result["b.md"], {
@@ -36,10 +35,9 @@ test("computeSnapshot: removes file deleted locally (remote delete)", async () =
 
 test("computeSnapshot: updates modified text hash", async () => {
   const { stash } = await makeStash();
-  const result = (stash as any).computeSnapshot(
-    { "a.md": { hash: "old-hash" } },
-    [{ path: "a.md", disk: "write", remote: "write", content: "new content" }],
-  );
+  const result = (stash as any).computeSnapshot({ "a.md": { hash: "old-hash" } }, [
+    { path: "a.md", disk: "write", remote: "write", content: "new content" },
+  ]);
   assert.deepEqual(result["a.md"], {
     hash: hashBuffer(Buffer.from("new content", "utf8")),
   });
@@ -47,19 +45,16 @@ test("computeSnapshot: updates modified text hash", async () => {
 
 test("computeSnapshot: stores binary hash and modified", async () => {
   const { stash } = await makeStash();
-  const result = (stash as any).computeSnapshot(
-    {},
-    [
-      {
-        path: "img.png",
-        disk: "write",
-        remote: "write",
-        source: "remote",
-        hash: "abc",
-        modified: 1_709_290_800_000,
-      },
-    ],
-  );
+  const result = (stash as any).computeSnapshot({}, [
+    {
+      path: "img.png",
+      disk: "write",
+      remote: "write",
+      source: "remote",
+      hash: "abc",
+      modified: 1_709_290_800_000,
+    },
+  ]);
   assert.deepEqual(result, {
     "img.png": { hash: "abc", modified: 1_709_290_800_000 },
   });

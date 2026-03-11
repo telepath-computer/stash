@@ -3,11 +3,7 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Stash } from "../../src/stash.ts";
-import type {
-  GlobalConfig,
-  ProviderClass,
-  SnapshotEntry,
-} from "../../src/types.ts";
+import type { GlobalConfig, ProviderClass, SnapshotEntry } from "../../src/types.ts";
 
 export async function writeFiles(
   dir: string,
@@ -38,7 +34,7 @@ export async function makeStash(
     await writeFiles(dir, files);
   }
 
-  const stash = await Stash.init(dir, opts?.globalConfig ?? {}, {
+  await Stash.init(dir, opts?.globalConfig ?? {}, {
     providers: opts?.providers,
   });
 

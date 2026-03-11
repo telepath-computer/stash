@@ -3,16 +3,10 @@ import type { FileMutation } from "../types.ts";
 export type Direction = "up" | "down" | "both";
 
 export function mutationDirection(mutation: FileMutation): Direction {
-  if (
-    mutation.disk === "skip" &&
-    (mutation.remote === "write" || mutation.remote === "delete")
-  ) {
+  if (mutation.disk === "skip" && (mutation.remote === "write" || mutation.remote === "delete")) {
     return "up";
   }
-  if (
-    mutation.remote === "skip" &&
-    (mutation.disk === "write" || mutation.disk === "delete")
-  ) {
+  if (mutation.remote === "skip" && (mutation.disk === "write" || mutation.disk === "delete")) {
     return "down";
   }
   return "both";

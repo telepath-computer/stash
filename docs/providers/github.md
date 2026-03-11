@@ -16,9 +16,9 @@ The provider uses:
 
 ```ts
 type GitHubConfig = {
-  token: string
-  repo: string
-}
+  token: string;
+  repo: string;
+};
 ```
 
 - `token` comes from global config written by `stash setup github`

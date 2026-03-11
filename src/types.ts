@@ -11,9 +11,7 @@ export interface Field {
   secret?: boolean;
 }
 
-export type SnapshotEntry =
-  | { hash: string }
-  | { hash: string; modified: number };
+export type SnapshotEntry = { hash: string } | { hash: string; modified: number };
 
 export type FileState =
   | { type: "text"; content: string }

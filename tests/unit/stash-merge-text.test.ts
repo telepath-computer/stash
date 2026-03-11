@@ -14,11 +14,7 @@ test("mergeText: three-way non-overlapping edits", async () => {
 
 test("mergeText: overlapping edits preserves both sides", async () => {
   const { stash } = await makeStash();
-  const result = (stash as any).mergeText(
-    "hello world",
-    "hello brave world",
-    "hello cruel world",
-  );
+  const result = (stash as any).mergeText("hello world", "hello brave world", "hello cruel world");
   assert.equal(result.includes("brave"), true);
   assert.equal(result.includes("cruel"), true);
 });

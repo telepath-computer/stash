@@ -1,16 +1,9 @@
 import { Readable } from "node:stream";
 import type { Readable as NodeReadable } from "node:stream";
 import { PushConflictError } from "../../src/errors.ts";
-import type {
-  ChangeSet,
-  Provider,
-  PushPayload,
-  SnapshotEntry,
-} from "../../src/types.ts";
+import type { ChangeSet, Provider, PushPayload, SnapshotEntry } from "../../src/types.ts";
 
-function cloneSnapshot(
-  snapshot: Record<string, SnapshotEntry>,
-): Record<string, SnapshotEntry> {
+function cloneSnapshot(snapshot: Record<string, SnapshotEntry>): Record<string, SnapshotEntry> {
   return JSON.parse(JSON.stringify(snapshot)) as Record<string, SnapshotEntry>;
 }
 
@@ -42,9 +35,7 @@ export class FakeProvider implements Provider {
     this.snapshot = cloneSnapshot(opts?.snapshot ?? {});
   }
 
-  async fetch(
-    localSnapshot?: Record<string, SnapshotEntry>,
-  ): Promise<ChangeSet> {
+  async fetch(localSnapshot?: Record<string, SnapshotEntry>): Promise<ChangeSet> {
     this.fetchCalls += 1;
     const added = new Map();
     const modified = new Map();

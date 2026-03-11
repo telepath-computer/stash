@@ -9,9 +9,7 @@ test("reconcile: local modified, remote unchanged", async () => {
     makeChangeSet({ modified: { "a.md": { type: "text", content: "new" } } }),
     makeChangeSet({}),
   );
-  assert.deepEqual(result, [
-    { path: "a.md", disk: "skip", remote: "write", content: "new" },
-  ]);
+  assert.deepEqual(result, [{ path: "a.md", disk: "skip", remote: "write", content: "new" }]);
 });
 
 test("reconcile: remote modified, local unchanged", async () => {
@@ -20,16 +18,11 @@ test("reconcile: remote modified, local unchanged", async () => {
     makeChangeSet({}),
     makeChangeSet({ modified: { "a.md": { type: "text", content: "new" } } }),
   );
-  assert.deepEqual(result, [
-    { path: "a.md", disk: "write", remote: "skip", content: "new" },
-  ]);
+  assert.deepEqual(result, [{ path: "a.md", disk: "write", remote: "skip", content: "new" }]);
 });
 
 test("reconcile: both modified text merges with snapshot.local base", async () => {
-  const { stash } = await makeStash(
-    {},
-    { snapshotLocal: { "a.md": "hello world" } },
-  );
+  const { stash } = await makeStash({}, { snapshotLocal: { "a.md": "hello world" } });
   const [mutation] = (stash as any).reconcile(
     makeChangeSet({ modified: { "a.md": { type: "text", content: "hello brave world" } } }),
     makeChangeSet({ modified: { "a.md": { type: "text", content: "hello cruel world" } } }),
@@ -234,10 +227,7 @@ test("reconcile: both added text with identical content produces skip/skip", asy
 });
 
 test("reconcile: both modified text with identical content produces skip/skip", async () => {
-  const { stash } = await makeStash(
-    {},
-    { snapshotLocal: { "a.md": "original" } },
-  );
+  const { stash } = await makeStash({}, { snapshotLocal: { "a.md": "original" } });
   const [mutation] = (stash as any).reconcile(
     makeChangeSet({ modified: { "a.md": { type: "text", content: "updated" } } }),
     makeChangeSet({ modified: { "a.md": { type: "text", content: "updated" } } }),

@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
-import { basename, dirname, join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Emitter } from "./emitter.ts";
 import { PushConflictError, SyncLockError } from "./errors.ts";
@@ -48,9 +48,7 @@ type StashOptions = {
   providers?: Record<string, ProviderClass>;
 };
 
-function cloneSnapshot(
-  snapshot: Record<string, SnapshotEntry>,
-): Record<string, SnapshotEntry> {
+function cloneSnapshot(snapshot: Record<string, SnapshotEntry>): Record<string, SnapshotEntry> {
   return JSON.parse(JSON.stringify(snapshot)) as Record<string, SnapshotEntry>;
 }
 
@@ -89,7 +87,9 @@ export class Stash extends Emitter<StashEvents> {
   ): Promise<Stash> {
     const stashDir = join(dir, ".stash");
     if (!existsSync(stashDir)) {
-      throw new Error("This directory is not a stash. Run `stash init` or `stash connect <provider>` first.");
+      throw new Error(
+        "This directory is not a stash. Run `stash init` or `stash connect <provider>` first.",
+      );
     }
 
     const configPath = join(stashDir, "config.local.json");
@@ -120,10 +120,7 @@ export class Stash extends Emitter<StashEvents> {
 
   get config(): Record<string, Record<string, string>> {
     const out: Record<string, Record<string, string>> = {};
-    const names = new Set([
-      ...Object.keys(this.globalConfig),
-      ...Object.keys(this._connections),
-    ]);
+    const names = new Set([...Object.keys(this.globalConfig), ...Object.keys(this._connections)]);
     for (const name of names) {
       out[name] = {
         ...(this.globalConfig[name] ?? {}),
@@ -167,11 +164,7 @@ export class Stash extends Emitter<StashEvents> {
           const remoteChanges = await provider.fetch(localSnapshot);
           const mutations = this.reconcile(localChanges, remoteChanges);
           const nextSnapshot = this.computeSnapshot(localSnapshot, mutations);
-          const expectedHashes = this.buildExpectedHashes(
-            localChanges,
-            localSnapshot,
-            mutations,
-          );
+          const expectedHashes = this.buildExpectedHashes(localChanges, localSnapshot, mutations);
 
           if (this.hasAnyPathDrift(expectedHashes)) {
             lastRetryError = new Error("local files changed during sync");
@@ -183,8 +176,7 @@ export class Stash extends Emitter<StashEvents> {
 
           if (mutations.length > 0) {
             const payload = await this.buildPushPayload(mutations, nextSnapshot);
-            const snapshotChanged =
-              JSON.stringify(nextSnapshot) !== JSON.stringify(localSnapshot);
+            const snapshotChanged = JSON.stringify(nextSnapshot) !== JSON.stringify(localSnapshot);
             if (payload.files.size > 0 || payload.deletions.length > 0 || snapshotChanged) {
               try {
                 await provider.push(payload);
@@ -304,10 +296,8 @@ export class Stash extends Emitter<StashEvents> {
     for (const path of sortPaths(allPaths)) {
       const localWasDeleted = localDeleted.has(path);
       const remoteWasDeleted = remoteDeleted.has(path);
-      const localState =
-        local.added.get(path) ?? local.modified.get(path) ?? null;
-      const remoteState =
-        remote.added.get(path) ?? remote.modified.get(path) ?? null;
+      const localState = local.added.get(path) ?? local.modified.get(path) ?? null;
+      const remoteState = remote.added.get(path) ?? remote.modified.get(path) ?? null;
       const localKind = localWasDeleted
         ? "deleted"
         : local.added.has(path)
@@ -612,9 +602,7 @@ export class Stash extends Emitter<StashEvents> {
       const isDelete =
         mutation.disk === "delete" ||
         mutation.remote === "delete" ||
-        (mutation.disk === "skip" &&
-          mutation.remote === "skip" &&
-          mutation.source === undefined);
+        (mutation.disk === "skip" && mutation.remote === "skip" && mutation.source === undefined);
       if (isDelete) {
         this.safeDelete(join(this.snapshotLocalDir(), mutation.path));
       }
@@ -694,9 +682,7 @@ export class Stash extends Emitter<StashEvents> {
         break;
       }
       const entries = readdirSync(current);
-      const actual = entries.find(
-        (entry) => entry.toLowerCase() === segment.toLowerCase(),
-      );
+      const actual = entries.find((entry) => entry.toLowerCase() === segment.toLowerCase());
       if (actual && actual !== segment && !entries.includes(segment)) {
         renameSync(join(current, actual), join(current, segment));
       }
@@ -709,9 +695,7 @@ export class Stash extends Emitter<StashEvents> {
     let current = this.dir;
     for (const segment of segments) {
       const entries = readdirSync(current);
-      const actual = entries.find(
-        (entry) => entry.toLowerCase() === segment.toLowerCase(),
-      );
+      const actual = entries.find((entry) => entry.toLowerCase() === segment.toLowerCase());
       if (!actual || actual !== segment) {
         return false;
       }

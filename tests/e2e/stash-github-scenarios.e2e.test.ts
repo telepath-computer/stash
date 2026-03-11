@@ -3,16 +3,7 @@ import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import {
-  mkdir,
-  mkdtemp,
-  readFile,
-  rename,
-  rm,
-  symlink,
-  unlink,
-  writeFile,
-} from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -99,10 +90,7 @@ async function githubJson(
 }
 
 function isSecondaryRateLimit(status: number, message: string): boolean {
-  return (
-    status === 403 &&
-    message.toLowerCase().includes("secondary rate limit")
-  );
+  return status === 403 && message.toLowerCase().includes("secondary rate limit");
 }
 
 async function getUsername(): Promise<string> {
@@ -158,10 +146,7 @@ async function makeTempDir(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-${randomUUID().slice(0, 8)}-`));
 }
 
-async function writeLocalFiles(
-  dir: string,
-  files: Record<string, string | Buffer>,
-): Promise<void> {
+async function writeLocalFiles(dir: string, files: Record<string, string | Buffer>): Promise<void> {
   for (const [relPath, content] of Object.entries(files)) {
     const absPath = join(dir, relPath);
     await mkdir(dirname(absPath), { recursive: true });
@@ -223,20 +208,6 @@ async function readRemoteText(repo: string, path: string): Promise<string> {
   return response.text();
 }
 
-async function readRemoteBuffer(repo: string, path: string): Promise<Buffer> {
-  const response = await githubRequest(
-    "GET",
-    `/repos/${repo}/contents/${encodePath(path)}?ref=main`,
-    undefined,
-    { Accept: "application/vnd.github.raw+json" },
-  );
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Failed reading remote buffer ${path}: ${response.status} ${text}`);
-  }
-  return Buffer.from(await response.arrayBuffer());
-}
-
 async function upsertRemoteFile(
   repo: string,
   path: string,
@@ -267,11 +238,7 @@ async function upsertRemoteFile(
     payload.sha = sha;
   }
 
-  await githubJson(
-    "PUT",
-    `/repos/${repo}/contents/${encodePath(path)}`,
-    payload,
-  );
+  await githubJson("PUT", `/repos/${repo}/contents/${encodePath(path)}`, payload);
 }
 
 async function createMachine(
@@ -284,9 +251,7 @@ async function createMachine(
   return { dir, stash };
 }
 
-async function setupTwoMachineBaseline(
-  initialFiles: Record<string, string | Buffer>,
-): Promise<{
+async function setupTwoMachineBaseline(initialFiles: Record<string, string | Buffer>): Promise<{
   repo: RepoInfo;
   machineA: Machine;
   machineB: Machine;
@@ -357,9 +322,7 @@ test("scenario 4: connect stores stash connection config", E2E_OPTIONS, async ()
     await runCli(dir, ["connect", "github", "--repo", "user/repo"], {
       XDG_CONFIG_HOME: xdg,
     });
-    const config = JSON.parse(
-      await readFile(join(dir, ".stash", "config.local.json"), "utf8"),
-    );
+    const config = JSON.parse(await readFile(join(dir, ".stash", "config.local.json"), "utf8"));
     assert.deepEqual(config, { connections: { github: { repo: "user/repo" } } });
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -372,15 +335,11 @@ test("scenario 5: connect auto-writes setup config when missing", E2E_OPTIONS, a
   const xdg = await makeTempDir("xdg");
   try {
     await runCli(dir, ["init"]);
-    await runCli(
-      dir,
-      ["connect", "github", "--repo", "user/repo", "--token", "from-connect"],
-      { XDG_CONFIG_HOME: xdg },
-    );
+    await runCli(dir, ["connect", "github", "--repo", "user/repo", "--token", "from-connect"], {
+      XDG_CONFIG_HOME: xdg,
+    });
 
-    const globalConfig = JSON.parse(
-      await readFile(join(xdg, "stash", "config.json"), "utf8"),
-    );
+    const globalConfig = JSON.parse(await readFile(join(xdg, "stash", "config.json"), "utf8"));
     assert.deepEqual(globalConfig, { github: { token: "from-connect" } });
 
     const localConfig = JSON.parse(
@@ -510,34 +469,36 @@ test("scenario 8c: new machine joins existing stash with nested dirs", E2E_OPTIO
   }
 });
 
-test("scenario 9: first sync merges when local and remote both populated", E2E_OPTIONS, async () => {
-  let repo: RepoInfo | null = null;
-  const dirs: string[] = [];
-  try {
-    repo = await createRepo();
-    await upsertRemoteFile(repo.fullName, "shared.md", "remote content");
+test(
+  "scenario 9: first sync merges when local and remote both populated",
+  E2E_OPTIONS,
+  async () => {
+    let repo: RepoInfo | null = null;
+    const dirs: string[] = [];
+    try {
+      repo = await createRepo();
+      await upsertRemoteFile(repo.fullName, "shared.md", "remote content");
 
-    const machine = await makeTempDir("machine");
-    dirs.push(machine);
-    await writeFile(join(machine, "local.md"), "local content", "utf8");
-    const stash = await Stash.init(machine, { github: { token: token! } });
-    await stash.connect("github", { repo: repo.fullName });
-    await syncWithRetry(stash);
+      const machine = await makeTempDir("machine");
+      dirs.push(machine);
+      await writeFile(join(machine, "local.md"), "local content", "utf8");
+      const stash = await Stash.init(machine, { github: { token: token! } });
+      await stash.connect("github", { repo: repo.fullName });
+      await syncWithRetry(stash);
 
-    assert.equal(await readFile(join(machine, "shared.md"), "utf8"), "remote content");
-    assert.equal(await readFile(join(machine, "local.md"), "utf8"), "local content");
-    assert.equal(await remoteFileExists(repo.fullName, "shared.md"), true);
-    assert.equal(await remoteFileExists(repo.fullName, "local.md"), true);
-    const snapshot = JSON.parse(
-      await readFile(join(machine, ".stash", "snapshot.json"), "utf8"),
-    );
-    assert.equal(typeof snapshot["shared.md"]?.hash, "string");
-    assert.equal(typeof snapshot["local.md"]?.hash, "string");
-  } finally {
-    if (repo) await deleteRepo(repo.fullName);
-    await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
-  }
-});
+      assert.equal(await readFile(join(machine, "shared.md"), "utf8"), "remote content");
+      assert.equal(await readFile(join(machine, "local.md"), "utf8"), "local content");
+      assert.equal(await remoteFileExists(repo.fullName, "shared.md"), true);
+      assert.equal(await remoteFileExists(repo.fullName, "local.md"), true);
+      const snapshot = JSON.parse(await readFile(join(machine, ".stash", "snapshot.json"), "utf8"));
+      assert.equal(typeof snapshot["shared.md"]?.hash, "string");
+      assert.equal(typeof snapshot["local.md"]?.hash, "string");
+    } finally {
+      if (repo) await deleteRepo(repo.fullName);
+      await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+    }
+  },
+);
 
 test("scenario 10: local edit with unchanged remote pushes local", E2E_OPTIONS, async () => {
   let setup: Awaited<ReturnType<typeof setupTwoMachineBaseline>> | null = null;
@@ -636,22 +597,26 @@ test("scenario 15: both create same path converges on a single result", E2E_OPTI
   }
 });
 
-test("scenario 16: one-side delete with other unchanged deletes everywhere", E2E_OPTIONS, async () => {
-  let setup: Awaited<ReturnType<typeof setupTwoMachineBaseline>> | null = null;
-  try {
-    setup = await setupTwoMachineBaseline({ "hello.md": "hello" });
-    await unlink(join(setup.machineA.dir, "hello.md"));
-    await syncWithRetry(setup.machineA.stash);
-    assert.equal(await remoteFileExists(setup.repo.fullName, "hello.md"), false);
-    await syncWithRetry(setup.machineB.stash);
-    assert.equal(existsSync(join(setup.machineB.dir, "hello.md")), false);
-  } finally {
-    if (setup) {
-      await deleteRepo(setup.repo.fullName);
-      await Promise.all(setup.dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+test(
+  "scenario 16: one-side delete with other unchanged deletes everywhere",
+  E2E_OPTIONS,
+  async () => {
+    let setup: Awaited<ReturnType<typeof setupTwoMachineBaseline>> | null = null;
+    try {
+      setup = await setupTwoMachineBaseline({ "hello.md": "hello" });
+      await unlink(join(setup.machineA.dir, "hello.md"));
+      await syncWithRetry(setup.machineA.stash);
+      assert.equal(await remoteFileExists(setup.repo.fullName, "hello.md"), false);
+      await syncWithRetry(setup.machineB.stash);
+      assert.equal(existsSync(join(setup.machineB.dir, "hello.md")), false);
+    } finally {
+      if (setup) {
+        await deleteRepo(setup.repo.fullName);
+        await Promise.all(setup.dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+      }
     }
-  }
-});
+  },
+);
 
 test("scenario 17: local delete and remote edit keeps content", E2E_OPTIONS, async () => {
   let setup: Awaited<ReturnType<typeof setupTwoMachineBaseline>> | null = null;
@@ -976,7 +941,10 @@ test("scenario 31: .stash local metadata is ignored remotely", E2E_OPTIONS, asyn
     setup = await setupTwoMachineBaseline({ "hello.md": "hello" });
     await syncWithRetry(setup.machineA.stash);
     assert.equal(await remoteFileExists(setup.repo.fullName, ".stash/config.local.json"), false);
-    assert.equal(await remoteFileExists(setup.repo.fullName, ".stash/snapshot.local/hello.md"), false);
+    assert.equal(
+      await remoteFileExists(setup.repo.fullName, ".stash/snapshot.local/hello.md"),
+      false,
+    );
     assert.equal(await remoteFileExists(setup.repo.fullName, ".stash/snapshot.json"), true);
   } finally {
     if (setup) {
@@ -986,40 +954,41 @@ test("scenario 31: .stash local metadata is ignored remotely", E2E_OPTIONS, asyn
   }
 });
 
-test("scenario 32: first sync with identical local and remote content skips redundant writes", E2E_OPTIONS, async () => {
-  let repo: RepoInfo | null = null;
-  const dirs: string[] = [];
-  try {
-    repo = await createRepo();
-    await upsertRemoteFile(repo.fullName, "hello.md", "hello");
+test(
+  "scenario 32: first sync with identical local and remote content skips redundant writes",
+  E2E_OPTIONS,
+  async () => {
+    let repo: RepoInfo | null = null;
+    const dirs: string[] = [];
+    try {
+      repo = await createRepo();
+      await upsertRemoteFile(repo.fullName, "hello.md", "hello");
 
-    const machine = await makeTempDir("identical-first-sync");
-    dirs.push(machine);
-    await writeLocalFiles(machine, { "hello.md": "hello" });
-    const stash = await Stash.init(machine, { github: { token: token! } });
-    await stash.connect("github", { repo: repo.fullName });
-    await syncWithRetry(stash);
+      const machine = await makeTempDir("identical-first-sync");
+      dirs.push(machine);
+      await writeLocalFiles(machine, { "hello.md": "hello" });
+      const stash = await Stash.init(machine, { github: { token: token! } });
+      await stash.connect("github", { repo: repo.fullName });
+      await syncWithRetry(stash);
 
-    assert.equal(await readFile(join(machine, "hello.md"), "utf8"), "hello");
-    assert.equal(await remoteFileExistsRetry(repo.fullName, ".stash/snapshot.json"), true);
-    assert.equal(await readRemoteText(repo.fullName, "hello.md"), "hello");
+      assert.equal(await readFile(join(machine, "hello.md"), "utf8"), "hello");
+      assert.equal(await remoteFileExistsRetry(repo.fullName, ".stash/snapshot.json"), true);
+      assert.equal(await readRemoteText(repo.fullName, "hello.md"), "hello");
 
-    const localSnapshot = JSON.parse(
-      await readFile(join(machine, ".stash", "snapshot.json"), "utf8"),
-    );
-    assert.equal(typeof localSnapshot["hello.md"]?.hash, "string");
-    assert.equal(
-      localSnapshot["hello.md"].hash,
-      hashBuffer(Buffer.from("hello", "utf8")),
-    );
+      const localSnapshot = JSON.parse(
+        await readFile(join(machine, ".stash", "snapshot.json"), "utf8"),
+      );
+      assert.equal(typeof localSnapshot["hello.md"]?.hash, "string");
+      assert.equal(localSnapshot["hello.md"].hash, hashBuffer(Buffer.from("hello", "utf8")));
 
-    await syncWithRetry(stash);
-    assert.equal(await readFile(join(machine, "hello.md"), "utf8"), "hello");
-  } finally {
-    if (repo) await deleteRepo(repo.fullName);
-    await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
-  }
-});
+      await syncWithRetry(stash);
+      assert.equal(await readFile(join(machine, "hello.md"), "utf8"), "hello");
+    } finally {
+      if (repo) await deleteRepo(repo.fullName);
+      await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+    }
+  },
+);
 
 test("scenario 37: directory case rename converges across two machines", E2E_OPTIONS, async () => {
   let repo: RepoInfo | null = null;
@@ -1058,12 +1027,8 @@ test("scenario 37: directory case rename converges across two machines", E2E_OPT
     // Verify actual directory casing on disk (not just content, which
     // succeeds case-insensitively on macOS)
     const { readdirSync } = await import("node:fs");
-    const machineADirs = readdirSync(machineA.dir).filter(
-      (e) => e.toLowerCase() === "notes",
-    );
-    const machineBDirs = readdirSync(machineB.dir).filter(
-      (e) => e.toLowerCase() === "notes",
-    );
+    const machineADirs = readdirSync(machineA.dir).filter((e) => e.toLowerCase() === "notes");
+    const machineBDirs = readdirSync(machineB.dir).filter((e) => e.toLowerCase() === "notes");
     console.log("Machine A dir casing:", machineADirs);
     console.log("Machine B dir casing:", machineBDirs);
 
@@ -1112,10 +1077,7 @@ test("scenario 36: case-only rename syncs to remote and back", E2E_OPTIONS, asyn
 
     // Machine B: sync should pull the rename
     await syncWithRetry(machineB.stash);
-    assert.equal(
-      await readFile(join(machineB.dir, "notes", "arabella.md"), "utf8"),
-      "hello",
-    );
+    assert.equal(await readFile(join(machineB.dir, "notes", "arabella.md"), "utf8"), "hello");
   } finally {
     if (repo) await deleteRepo(repo.fullName);
     await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));

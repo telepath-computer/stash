@@ -41,14 +41,9 @@ test("sync: first sync pushes all local files", async () => {
   assert.equal(fake.files.get("notes/todo.md"), "buy milk");
   assert.equal(typeof fake.snapshot["hello.md"]?.hash, "string");
 
-  const localSnapshot = JSON.parse(
-    await readFile(join(dir, ".stash", "snapshot.json"), "utf8"),
-  );
+  const localSnapshot = JSON.parse(await readFile(join(dir, ".stash", "snapshot.json"), "utf8"));
   assert.deepEqual(localSnapshot, fake.snapshot);
-  assert.equal(
-    await readFile(join(dir, ".stash", "snapshot.local", "hello.md"), "utf8"),
-    "hello",
-  );
+  assert.equal(await readFile(join(dir, ".stash", "snapshot.local", "hello.md"), "utf8"), "hello");
 });
 
 test("sync: first sync pulls all remote files", async () => {
@@ -69,9 +64,7 @@ test("sync: first sync pulls all remote files", async () => {
 
   assert.equal(await readFile(join(dir, "readme.md"), "utf8"), "welcome");
   assert.equal(await readFile(join(dir, "data", "config.json"), "utf8"), "{}");
-  const snapshot = JSON.parse(
-    await readFile(join(dir, ".stash", "snapshot.json"), "utf8"),
-  );
+  const snapshot = JSON.parse(await readFile(join(dir, ".stash", "snapshot.json"), "utf8"));
   assert.deepEqual(snapshot, fake.snapshot);
 });
 
@@ -203,10 +196,7 @@ test("sync: snapshot.local writes text files and skips binary files", async () =
   await stash.connect("fake", { repo: "r" });
   await stash.sync();
 
-  assert.equal(
-    await readFile(join(dir, ".stash", "snapshot.local", "text.md"), "utf8"),
-    "hello",
-  );
+  assert.equal(await readFile(join(dir, ".stash", "snapshot.local", "text.md"), "utf8"), "hello");
   assert.equal(existsSync(join(dir, ".stash", "snapshot.local", "img.bin")), false);
 });
 
@@ -252,22 +242,11 @@ test("sync: first sync with identical content on both sides skips file writes", 
   assert.equal(await readFile(join(dir, "hello.md"), "utf8"), "hello");
   assert.equal(await readFile(join(dir, "notes/todo.md"), "utf8"), "buy milk");
 
-  const localSnapshot = JSON.parse(
-    await readFile(join(dir, ".stash", "snapshot.json"), "utf8"),
-  );
-  assert.equal(
-    localSnapshot["hello.md"]?.hash,
-    hashBuffer(Buffer.from("hello", "utf8")),
-  );
-  assert.equal(
-    localSnapshot["notes/todo.md"]?.hash,
-    hashBuffer(Buffer.from("buy milk", "utf8")),
-  );
+  const localSnapshot = JSON.parse(await readFile(join(dir, ".stash", "snapshot.json"), "utf8"));
+  assert.equal(localSnapshot["hello.md"]?.hash, hashBuffer(Buffer.from("hello", "utf8")));
+  assert.equal(localSnapshot["notes/todo.md"]?.hash, hashBuffer(Buffer.from("buy milk", "utf8")));
 
-  assert.equal(
-    await readFile(join(dir, ".stash", "snapshot.local", "hello.md"), "utf8"),
-    "hello",
-  );
+  assert.equal(await readFile(join(dir, ".stash", "snapshot.local", "hello.md"), "utf8"), "hello");
   assert.equal(
     await readFile(join(dir, ".stash", "snapshot.local", "notes/todo.md"), "utf8"),
     "buy milk",
@@ -296,13 +275,8 @@ test("sync: skip/skip mutations with changed snapshot still pushes snapshot", as
   assert.equal(lastPush.files.size, 0, "no file content should be pushed");
   assert.deepEqual(lastPush.deletions, [], "no deletions should be pushed");
 
-  const localSnapshot = JSON.parse(
-    await readFile(join(dir, ".stash", "snapshot.json"), "utf8"),
-  );
-  assert.equal(
-    localSnapshot["hello.md"]?.hash,
-    hashBuffer(Buffer.from("updated", "utf8")),
-  );
+  const localSnapshot = JSON.parse(await readFile(join(dir, ".stash", "snapshot.json"), "utf8"));
+  assert.equal(localSnapshot["hello.md"]?.hash, hashBuffer(Buffer.from("updated", "utf8")));
 });
 
 test("sync: remote-source binary winner is not re-uploaded", async () => {
@@ -348,10 +322,7 @@ test("sync: preserves local edits made after scan but before push (pre-push race
   const bobRemote = "line1\nline2\nline3\nBOB_END\n";
 
   const fake = new FakeProvider();
-  const { stash, dir } = await makeStash(
-    { "doc.md": baseline },
-    { providers: fakeRegistry(fake) },
-  );
+  const { stash, dir } = await makeStash({ "doc.md": baseline }, { providers: fakeRegistry(fake) });
   await stash.connect("fake", { repo: "r" });
   await stash.sync();
 
@@ -392,10 +363,7 @@ test("sync: preserves local edits made after push but before apply (post-push ra
   const bobRemote = "line1\nline2\nline3\nBOB_END\n";
 
   const fake = new FakeProvider();
-  const { stash, dir } = await makeStash(
-    { "doc.md": baseline },
-    { providers: fakeRegistry(fake) },
-  );
+  const { stash, dir } = await makeStash({ "doc.md": baseline }, { providers: fakeRegistry(fake) });
   await stash.connect("fake", { repo: "r" });
   await stash.sync();
 
@@ -439,10 +407,7 @@ test("sync: drift retries are bounded and failed cycle does not apply/save", asy
   const bobRemote = "line1\nline2\nline3\nBOB_END\n";
 
   const fake = new FakeProvider();
-  const { stash, dir } = await makeStash(
-    { "doc.md": baseline },
-    { providers: fakeRegistry(fake) },
-  );
+  const { stash, dir } = await makeStash({ "doc.md": baseline }, { providers: fakeRegistry(fake) });
   await stash.connect("fake", { repo: "r" });
   await stash.sync();
 
@@ -450,9 +415,7 @@ test("sync: drift retries are bounded and failed cycle does not apply/save", asy
   fake.snapshot["doc.md"] = { hash: hashBuffer(Buffer.from(bobRemote, "utf8")) };
   await writeFiles(dir, { "doc.md": aliceEarly });
 
-  const beforeSnapshot = JSON.parse(
-    await readFile(join(dir, ".stash", "snapshot.json"), "utf8"),
-  );
+  const beforeSnapshot = JSON.parse(await readFile(join(dir, ".stash", "snapshot.json"), "utf8"));
   fake.fetchCalls = 0;
   fake.pushCalls = 0;
 
@@ -463,9 +426,7 @@ test("sync: drift retries are bounded and failed cycle does not apply/save", asy
   assert.equal(fake.pushCalls, 0);
   assert.equal(await readFile(join(dir, "doc.md"), "utf8"), aliceEarly);
 
-  const afterSnapshot = JSON.parse(
-    await readFile(join(dir, ".stash", "snapshot.json"), "utf8"),
-  );
+  const afterSnapshot = JSON.parse(await readFile(join(dir, ".stash", "snapshot.json"), "utf8"));
   assert.deepEqual(afterSnapshot, beforeSnapshot);
 });
 
@@ -491,9 +452,7 @@ test("sync: case-only rename syncs successfully", async () => {
   // Old-case path should be gone from remote
   assert.equal(fake.files.has("notes/Arabella.md"), false);
   // Snapshot updated to new casing
-  const snapshot = JSON.parse(
-    await readFile(join(dir, ".stash", "snapshot.json"), "utf8"),
-  );
+  const snapshot = JSON.parse(await readFile(join(dir, ".stash", "snapshot.json"), "utf8"));
   assert.ok(snapshot["notes/arabella.md"]);
   assert.equal(snapshot["notes/Arabella.md"], undefined);
 });
@@ -560,14 +519,9 @@ test("sync: directory case rename applies correctly on pull", async () => {
   await stash.sync();
 
   // Verify disk has lowercase directory
-  const dirs = readdirSync(dir).filter(
-    (e) => e.toLowerCase() === "notes",
-  );
+  const dirs = readdirSync(dir).filter((e) => e.toLowerCase() === "notes");
   assert.deepEqual(dirs, ["notes"]);
-  assert.equal(
-    await readFile(join(dir, "notes", "draft.md"), "utf8"),
-    "hello",
-  );
+  assert.equal(await readFile(join(dir, "notes", "draft.md"), "utf8"), "hello");
 });
 
 test("sync: nested directory case rename applies correctly", async () => {
@@ -591,18 +545,11 @@ test("sync: nested directory case rename applies correctly", async () => {
   await stash.sync();
 
   // Verify both directory segments renamed
-  const topDirs = readdirSync(dir).filter(
-    (e) => e.toLowerCase() === "docs",
-  );
+  const topDirs = readdirSync(dir).filter((e) => e.toLowerCase() === "docs");
   assert.deepEqual(topDirs, ["docs"]);
-  const nestedDirs = readdirSync(join(dir, "docs")).filter(
-    (e) => e.toLowerCase() === "notes",
-  );
+  const nestedDirs = readdirSync(join(dir, "docs")).filter((e) => e.toLowerCase() === "notes");
   assert.deepEqual(nestedDirs, ["notes"]);
-  assert.equal(
-    await readFile(join(dir, "docs", "notes", "draft.md"), "utf8"),
-    "hello",
-  );
+  assert.equal(await readFile(join(dir, "docs", "notes", "draft.md"), "utf8"), "hello");
 });
 
 test("sync: true deletion still works alongside casing check", async () => {
@@ -620,8 +567,6 @@ test("sync: true deletion still works alongside casing check", async () => {
 
   assert.equal(fake.files.has("notes/Arabella.md"), false);
   assert.equal(fake.files.get("other.md"), "keep");
-  const snapshot = JSON.parse(
-    await readFile(join(dir, ".stash", "snapshot.json"), "utf8"),
-  );
+  const snapshot = JSON.parse(await readFile(join(dir, ".stash", "snapshot.json"), "utf8"));
   assert.equal(snapshot["notes/Arabella.md"], undefined);
 });

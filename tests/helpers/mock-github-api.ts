@@ -95,9 +95,13 @@ export class MockGitHubAPI {
         typeof input === "string" || input instanceof URL
           ? new URL(input.toString())
           : new URL(input.url);
-      const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+      const method = (
+        init?.method ?? (input instanceof Request ? input.method : "GET")
+      ).toUpperCase();
       const path = `${requestUrl.pathname}${requestUrl.search}`;
-      const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+      const headers = new Headers(
+        init?.headers ?? (input instanceof Request ? input.headers : undefined),
+      );
 
       let parsedBody: unknown;
       if (init?.body && typeof init.body === "string") {

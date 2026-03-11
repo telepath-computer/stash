@@ -33,11 +33,7 @@ async function syncWithRetry(stash: Stash, attempts = 3): Promise<void> {
   throw lastError;
 }
 
-async function githubRequest(
-  method: string,
-  path: string,
-  body?: unknown,
-): Promise<Response> {
+async function githubRequest(method: string, path: string, body?: unknown): Promise<Response> {
   if (!token) {
     throw new Error("GITHUB_TOKEN is required");
   }
@@ -125,17 +121,14 @@ async function getRawFile(repo: string, path: string): Promise<string> {
     .split("/")
     .map((segment) => encodeURIComponent(segment))
     .join("/");
-  const res = await fetch(
-    `https://api.github.com/repos/${repo}/contents/${encodedPath}?ref=main`,
-    {
-      headers: {
-        Authorization: `token ${token}`,
-        Accept: "application/vnd.github.raw+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "stash-e2e-test",
-      },
+  const res = await fetch(`https://api.github.com/repos/${repo}/contents/${encodedPath}?ref=main`, {
+    headers: {
+      Authorization: `token ${token}`,
+      Accept: "application/vnd.github.raw+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "stash-e2e-test",
     },
-  );
+  });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Failed to read ${path}: ${res.status} ${text}`);

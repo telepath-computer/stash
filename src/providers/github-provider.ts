@@ -22,10 +22,7 @@ function encodePath(path: string): string {
 }
 
 function isRateLimited(response: Response): boolean {
-  return (
-    response.status === 403 &&
-    response.headers.get("x-ratelimit-remaining") === "0"
-  );
+  return response.status === 403 && response.headers.get("x-ratelimit-remaining") === "0";
 }
 
 async function streamToBuffer(stream: Readable): Promise<Buffer> {
@@ -93,9 +90,7 @@ export class GitHubProvider implements Provider {
       "GET",
       this.repoPath("/contents/.stash/snapshot.json?ref=main"),
     );
-    if (snapshotRes.status === 404) {
-      remoteSnapshot = null;
-    } else {
+    if (snapshotRes.status !== 404) {
       await this.ensureOk(snapshotRes, "Failed to fetch remote snapshot");
       const body = await snapshotRes.json();
       const content = Buffer.from((body.content as string).replace(/\n/g, ""), "base64").toString(
@@ -200,9 +195,7 @@ export class GitHubProvider implements Provider {
         const raw = await this.fetchRawBytes(path);
         const hash = snapshotEntry?.hash ?? hashBuffer(raw);
         const modifiedAt =
-          snapshotEntry && "modified" in snapshotEntry
-            ? snapshotEntry.modified
-            : Date.now();
+          snapshotEntry && "modified" in snapshotEntry ? snapshotEntry.modified : Date.now();
         const state = { type: "binary" as const, hash, modified: modifiedAt };
         if (addedPaths.has(path)) {
           added.set(path, state);
@@ -217,9 +210,7 @@ export class GitHubProvider implements Provider {
         const raw = await this.fetchRawBytes(path);
         const hash = snapshotEntry?.hash ?? hashBuffer(raw);
         const modifiedAt =
-          snapshotEntry && "modified" in snapshotEntry
-            ? snapshotEntry.modified
-            : Date.now();
+          snapshotEntry && "modified" in snapshotEntry ? snapshotEntry.modified : Date.now();
         const state = { type: "binary" as const, hash, modified: modifiedAt };
         if (addedPaths.has(path)) {
           added.set(path, state);
@@ -318,31 +309,25 @@ export class GitHubProvider implements Provider {
       commitBody.parents = [this.headSha];
     }
 
-    const commitRes = await this.rest(
-      "POST",
-      this.repoPath("/git/commits"),
-      commitBody,
-    );
+    const commitRes = await this.rest("POST", this.repoPath("/git/commits"), commitBody);
     await this.ensureOk(commitRes, "Failed to create commit");
     const commit = await commitRes.json();
     const commitSha = commit.sha as string;
 
     if (this.headSha) {
-      const refRes = await this.rest(
-        "PATCH",
-        this.repoPath("/git/refs/heads/main"),
-        { sha: commitSha, force: false },
-      );
+      const refRes = await this.rest("PATCH", this.repoPath("/git/refs/heads/main"), {
+        sha: commitSha,
+        force: false,
+      });
       if (refRes.status === 422) {
         throw new PushConflictError("Remote main moved during push");
       }
       await this.ensureOk(refRes, "Failed to update main ref");
     } else {
-      const refCreate = await this.rest(
-        "POST",
-        this.repoPath("/git/refs"),
-        { ref: "refs/heads/main", sha: commitSha },
-      );
+      const refCreate = await this.rest("POST", this.repoPath("/git/refs"), {
+        ref: "refs/heads/main",
+        sha: commitSha,
+      });
       await this.ensureOk(refCreate, "Failed to create main ref");
     }
 
@@ -354,9 +339,7 @@ export class GitHubProvider implements Provider {
     return `/repos/${this.owner}/${this.name}${path}`;
   }
 
-  private async bootstrapEmptyRepo(
-    snapshot: Record<string, SnapshotEntry>,
-  ): Promise<void> {
+  private async bootstrapEmptyRepo(snapshot: Record<string, SnapshotEntry>): Promise<void> {
     const bootstrapRes = await this.rest(
       "PUT",
       this.repoPath(`/contents/${encodePath(".stash/snapshot.json")}`),
@@ -423,7 +406,8 @@ export class GitHubProvider implements Provider {
       return;
     }
     const statusText = response.statusText.trim();
-    const status = statusText.length > 0 ? `${response.status} ${statusText}` : `${response.status}`;
+    const status =
+      statusText.length > 0 ? `${response.status} ${statusText}` : `${response.status}`;
     throw new Error(`${message} (${status})`);
   }
 

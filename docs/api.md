@@ -7,16 +7,12 @@ The goal is to keep the surface area explicit and stable. If this contract chang
 ## Package Exports
 
 ```ts
-export { Stash } from "./stash.ts"
-export type { StashEvents } from "./stash.ts"
-export { GitHubProvider } from "./providers/github-provider.ts"
-export { PushConflictError, SyncLockError } from "./errors.ts"
-export type { Disposable } from "./emitter.ts"
-export {
-  getGlobalConfigPath,
-  readGlobalConfig,
-  writeGlobalConfig,
-} from "./global-config.ts"
+export { Stash } from "./stash.ts";
+export type { StashEvents } from "./stash.ts";
+export { GitHubProvider } from "./providers/github-provider.ts";
+export { PushConflictError, SyncLockError } from "./errors.ts";
+export type { Disposable } from "./emitter.ts";
+export { getGlobalConfigPath, readGlobalConfig, writeGlobalConfig } from "./global-config.ts";
 export type {
   ChangeSet,
   ConnectionConfig,
@@ -30,7 +26,7 @@ export type {
   PushPayload,
   SnapshotEntry,
   StatusResult,
-} from "./types.ts"
+} from "./types.ts";
 ```
 
 ## `Stash`
@@ -39,29 +35,29 @@ export type {
 
 ```ts
 type StashEvents = {
-  mutation: FileMutation
-}
+  mutation: FileMutation;
+};
 
 class Stash extends Emitter<StashEvents> {
   static load(
     dir: string,
     globalConfig: GlobalConfig,
-    options?: { providers?: Record<string, ProviderClass> }
-  ): Promise<Stash>
+    options?: { providers?: Record<string, ProviderClass> },
+  ): Promise<Stash>;
 
   static init(
     dir: string,
     globalConfig: GlobalConfig,
-    options?: { providers?: Record<string, ProviderClass> }
-  ): Promise<Stash>
+    options?: { providers?: Record<string, ProviderClass> },
+  ): Promise<Stash>;
 
-  get connections(): Record<string, ConnectionConfig>
-  get config(): Record<string, Record<string, string>>
+  get connections(): Record<string, ConnectionConfig>;
+  get config(): Record<string, Record<string, string>>;
 
-  connect(provider: string, fields: Record<string, string>): Promise<void>
-  disconnect(provider: string): Promise<void>
-  sync(): Promise<void>
-  status(): StatusResult
+  connect(provider: string, fields: Record<string, string>): Promise<void>;
+  disconnect(provider: string): Promise<void>;
+  sync(): Promise<void>;
+  status(): StatusResult;
 }
 ```
 
@@ -150,10 +146,10 @@ Returns local status without network access:
 
 ```ts
 interface StatusResult {
-  added: string[]
-  modified: string[]
-  deleted: string[]
-  lastSync: Date | null
+  added: string[];
+  modified: string[];
+  deleted: string[];
+  lastSync: Date | null;
 }
 ```
 
@@ -162,9 +158,9 @@ interface StatusResult {
 The package also exports helpers for reading and writing the global config file:
 
 ```ts
-function getGlobalConfigPath(): string
-function readGlobalConfig(): Promise<GlobalConfig>
-function writeGlobalConfig(config: GlobalConfig): Promise<void>
+function getGlobalConfigPath(): string;
+function readGlobalConfig(): Promise<GlobalConfig>;
+function writeGlobalConfig(config: GlobalConfig): Promise<void>;
 ```
 
 Behavior:
@@ -178,9 +174,9 @@ Providers are transport interfaces used by `Stash`.
 
 ```ts
 interface Provider {
-  fetch(localSnapshot?: Record<string, SnapshotEntry>): Promise<ChangeSet>
-  get(path: string): Promise<Readable>
-  push(payload: PushPayload): Promise<void>
+  fetch(localSnapshot?: Record<string, SnapshotEntry>): Promise<ChangeSet>;
+  get(path: string): Promise<Readable>;
+  push(payload: PushPayload): Promise<void>;
 }
 ```
 
@@ -200,20 +196,20 @@ Writes remote changes for one sync cycle.
 
 ```ts
 interface ProviderSpec {
-  setup: Field[]
-  connect: Field[]
+  setup: Field[];
+  connect: Field[];
 }
 
 interface Field {
-  name: string
-  label: string
-  secret?: boolean
+  name: string;
+  label: string;
+  secret?: boolean;
 }
 
 type ProviderClass = {
-  spec: ProviderSpec
-  new (config: Record<string, string>): Provider
-}
+  spec: ProviderSpec;
+  new (config: Record<string, string>): Provider;
+};
 ```
 
 Providers expose:
@@ -232,7 +228,7 @@ Its static provider declaration is:
 GitHubProvider.spec = {
   setup: [{ name: "token", label: "Personal access token", secret: true }],
   connect: [{ name: "repo", label: "Repository (user/repo)" }],
-}
+};
 ```
 
 See `docs/providers/github.md` for its behavioral contract.
@@ -240,34 +236,32 @@ See `docs/providers/github.md` for its behavioral contract.
 ## Important Data Types
 
 ```ts
-type SnapshotEntry =
-  | { hash: string }
-  | { hash: string; modified: number }
+type SnapshotEntry = { hash: string } | { hash: string; modified: number };
 
 type FileState =
   | { type: "text"; content: string }
-  | { type: "binary"; hash: string; modified: number }
+  | { type: "binary"; hash: string; modified: number };
 
 interface ChangeSet {
-  added: Map<string, FileState>
-  modified: Map<string, FileState>
-  deleted: string[]
+  added: Map<string, FileState>;
+  modified: Map<string, FileState>;
+  deleted: string[];
 }
 
 interface FileMutation {
-  path: string
-  disk: "write" | "delete" | "skip"
-  remote: "write" | "delete" | "skip"
-  content?: string
-  source?: "local" | "remote"
-  hash?: string
-  modified?: number
+  path: string;
+  disk: "write" | "delete" | "skip";
+  remote: "write" | "delete" | "skip";
+  content?: string;
+  source?: "local" | "remote";
+  hash?: string;
+  modified?: number;
 }
 
 interface PushPayload {
-  files: Map<string, string | (() => Readable)>
-  deletions: string[]
-  snapshot: Record<string, SnapshotEntry>
+  files: Map<string, string | (() => Readable)>;
+  deletions: string[];
+  snapshot: Record<string, SnapshotEntry>;
 }
 ```
 

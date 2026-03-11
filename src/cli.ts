@@ -111,7 +111,9 @@ async function runSync(): Promise<void> {
     line.print(summary ? `${green("✓")} synced (${summary})` : `${green("✓")} up to date`);
   } catch (error) {
     renderer.error(error as Error);
-    line.print(`${red("✗")} sync failed: ${error instanceof Error ? error.message : String(error)}`);
+    line.print(
+      `${red("✗")} sync failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
     process.exitCode = 1;
   } finally {
     subscription.dispose();
@@ -168,7 +170,7 @@ async function main(argv = process.argv): Promise<void> {
       await runConnect(providerName, command.opts() as Record<string, string | undefined>);
     });
 
-  const disconnectCommand = program
+  program
     .command("disconnect")
     .description("Disconnect provider from this stash")
     .argument("<provider>", "Provider name")
@@ -176,7 +178,10 @@ async function main(argv = process.argv): Promise<void> {
       await runDisconnect(providerName);
     });
 
-  program.command("init").description("Initialize the current directory as a stash").action(runInit);
+  program
+    .command("init")
+    .description("Initialize the current directory as a stash")
+    .action(runInit);
   program.command("sync").description("Sync local files with connections").action(runSync);
   program.command("watch").description("Watch and sync continuously").action(runWatch);
   program.command("status").description("Show local stash status").action(runStatus);
@@ -189,10 +194,7 @@ async function main(argv = process.argv): Promise<void> {
       if (commandName === "setup") {
         addFieldOptions(setupCommand, provider.spec.setup);
       } else {
-        addFieldOptions(connectCommand, [
-          ...provider.spec.setup,
-          ...provider.spec.connect,
-        ]);
+        addFieldOptions(connectCommand, [...provider.spec.setup, ...provider.spec.connect]);
       }
     }
   }
