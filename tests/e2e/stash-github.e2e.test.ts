@@ -155,7 +155,14 @@ test(
       await writeFile(join(machineA, "hello.md"), "hello", "utf8");
       await writeFile(join(machineA, "notes.md"), "note", "utf8");
 
-      const globalConfig = { github: { token: token! } };
+      const globalConfig = {
+        providers: {
+          github: { token: token! },
+        },
+        background: {
+          stashes: [],
+        },
+      };
       const stashA = await Stash.init(machineA, globalConfig);
       await stashA.connect("github", { repo: repo.fullName });
       await syncWithRetry(stashA);
@@ -191,7 +198,14 @@ test(
       const machineB = await makeDir("machine-b");
       dirs.push(machineA, machineB);
 
-      const globalConfig = { github: { token: token! } };
+      const globalConfig = {
+        providers: {
+          github: { token: token! },
+        },
+        background: {
+          stashes: [],
+        },
+      };
       await writeFile(join(machineA, "hello.md"), "line1\nline2\nline3", "utf8");
 
       const stashA = await Stash.init(machineA, globalConfig);

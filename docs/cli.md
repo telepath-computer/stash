@@ -34,9 +34,12 @@ Example:
 
 ```bash
 stash connect github --repo user/repo
+stash connect github --repo user/repo --background
 ```
 
 If global setup fields are missing, `connect` collects and writes them before storing connection fields.
+
+If `--background` is supplied, the CLI also registers the current stash in the global background registry after connecting.
 
 ### `stash disconnect <provider>`
 
@@ -99,10 +102,71 @@ no connection configured — run `stash connect <provider>` first
 
 Prints configured connections plus local `added`, `modified`, `deleted`, and `lastSync` status based on disk versus `snapshot.json`.
 
+### `stash background install`
+
+Installs the OS-managed background service:
+
+- macOS uses a user `launchd` agent
+- Linux uses a user `systemd` unit
+- the installed service runs `stash background watch`
+- other platforms fail with `not supported on this platform yet`
+
+The CLI resolves the absolute `stash` binary path during install and writes it into the generated service file.
+
+### `stash background uninstall`
+
+Stops and removes the OS-managed background service for the current user.
+
+### `stash background add [dir]`
+
+Registers a stash for background syncing.
+
+- `[dir]` defaults to the current directory
+- the stored path is absolute
+- the stash stays registered until explicitly removed
+- if no provider is connected yet, the command warns but still registers the stash
+- if the service is not installed, the command warns but still registers the stash
+
+### `stash background remove [dir]`
+
+Unregisters a stash from background syncing.
+
+### `stash background status`
+
+Prints:
+
+- OS service state
+- each registered stash path
+- the most recent `.stash/status.json` summary for each stash
+
+On unsupported platforms it reports `service status: unsupported platform` but still lists registered stashes.
+
+### `stash background watch`
+
+Hidden daemon entrypoint used by the OS service.
+
+- loads the global background registry
+- starts a headless watcher per registered stash
+- hot-reloads when the global config changes
+- writes `.stash/status.json` and capped `.stash/sync.log` for each stash
+
 ## Config Locations
 
 - Global config: `~/.stash/config.json` or `$XDG_CONFIG_HOME/stash/config.json`
 - Per-stash config: `.stash/config.local.json`
+
+Global config shape:
+
+```json
+{
+  "providers": {
+    "github": { "token": "ghp_..." }
+  },
+  "background": {
+    "stashes": ["/Users/me/notes"]
+  }
+}
+```
 
 ## Scope
 
@@ -113,5 +177,6 @@ The CLI owns:
 - output rendering
 - watch orchestration
 - global config file I/O
+- background service install/status commands
 
 The CLI does not own sync logic or reconciliation rules; those live in `Stash`.

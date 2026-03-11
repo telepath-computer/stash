@@ -32,7 +32,19 @@ test("connections getter reflects latest local state", async () => {
 });
 
 test("config getter merges global and local provider fields", async () => {
-  const { stash } = await makeStash({}, { globalConfig: { github: { token: "t" } } });
+  const { stash } = await makeStash(
+    {},
+    {
+      globalConfig: {
+        providers: {
+          github: { token: "t" },
+        },
+        background: {
+          stashes: [],
+        },
+      },
+    },
+  );
   await stash.connect("github", { repo: "r" });
   assert.deepEqual((stash as any).config, {
     github: {

@@ -19,6 +19,7 @@ import { dirname, join, relative } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Emitter } from "./emitter.ts";
 import { PushConflictError, SyncLockError } from "./errors.ts";
+import { normalizeGlobalConfig } from "./global-config.ts";
 import { providers as defaultProviders } from "./providers/index.ts";
 import type {
   ChangeSet,
@@ -96,7 +97,12 @@ export class Stash extends Emitter<StashEvents> {
     const localConfig = existsSync(configPath)
       ? (JSON.parse(readFileSync(configPath, "utf8")) as LocalConfig)
       : { connections: {} };
-    return new Stash(dir, globalConfig, localConfig.connections ?? {}, options);
+    return new Stash(
+      dir,
+      normalizeGlobalConfig(globalConfig),
+      localConfig.connections ?? {},
+      options,
+    );
   }
 
   static async init(
@@ -120,10 +126,13 @@ export class Stash extends Emitter<StashEvents> {
 
   get config(): Record<string, Record<string, string>> {
     const out: Record<string, Record<string, string>> = {};
-    const names = new Set([...Object.keys(this.globalConfig), ...Object.keys(this._connections)]);
+    const names = new Set([
+      ...Object.keys(this.globalConfig.providers),
+      ...Object.keys(this._connections),
+    ]);
     for (const name of names) {
       out[name] = {
-        ...(this.globalConfig[name] ?? {}),
+        ...(this.globalConfig.providers[name] ?? {}),
         ...(this._connections[name] ?? {}),
       };
     }
@@ -236,7 +245,7 @@ export class Stash extends Emitter<StashEvents> {
     }
 
     const config = {
-      ...(this.globalConfig[name] ?? {}),
+      ...(this.globalConfig.providers[name] ?? {}),
       ...(this._connections[name] ?? {}),
     };
     return new providerClass(config);

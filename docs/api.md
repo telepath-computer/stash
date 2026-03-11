@@ -112,7 +112,7 @@ Returns the per-stash provider connection config exactly as stored locally.
 
 Returns the merged provider config view:
 
-- global provider config from `globalConfig`
+- global provider config from `globalConfig.providers`
 - overlaid with local per-stash connection config
 
 This is useful for code that needs the effective provider configuration, not just the local portion.
@@ -167,6 +167,18 @@ Behavior:
 
 - `getGlobalConfigPath()` resolves to `$XDG_CONFIG_HOME/stash/config.json` when `XDG_CONFIG_HOME` is set
 - otherwise it resolves to `~/.stash/config.json`
+- `readGlobalConfig()` normalizes the structured config shape shown below
+
+Global config shape:
+
+```ts
+interface GlobalConfig {
+  providers: Record<string, Record<string, string>>;
+  background: {
+    stashes: string[];
+  };
+}
+```
 
 ## Provider Contract
 
@@ -263,6 +275,7 @@ interface PushPayload {
   deletions: string[];
   snapshot: Record<string, SnapshotEntry>;
 }
+
 ```
 
 ## Error Types
