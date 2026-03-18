@@ -1189,13 +1189,25 @@ test("e2e: background daemon syncs a registered stash and writes status.json", E
       env: { ...process.env, XDG_CONFIG_HOME: xdgDir },
       stdio: "pipe",
     });
+    let daemonStdout = "";
+    let daemonStderr = "";
+    daemon.stdout.setEncoding("utf8");
+    daemon.stderr.setEncoding("utf8");
+    daemon.stdout.on("data", (chunk) => {
+      daemonStdout += chunk;
+    });
+    daemon.stderr.on("data", (chunk) => {
+      daemonStderr += chunk;
+    });
 
     const statusPath = join(dir, ".stash", "status.json");
     let synced = false;
+    let lastStatus: Record<string, unknown> | null = null;
     for (let i = 0; i < 30; i += 1) {
       await sleep(2_000);
       if (existsSync(statusPath)) {
-        const status = JSON.parse(await readFile(statusPath, "utf8"));
+        const status = JSON.parse(await readFile(statusPath, "utf8")) as Record<string, unknown>;
+        lastStatus = status;
         if (status.kind === "synced" || status.kind === "checked") {
           synced = true;
           break;
@@ -1203,10 +1215,18 @@ test("e2e: background daemon syncs a registered stash and writes status.json", E
       }
     }
 
+    const waitForExit =
+      daemon.exitCode !== null
+        ? Promise.resolve()
+        : new Promise<void>((resolve) => daemon.once("exit", () => resolve()));
     daemon.kill("SIGTERM");
-    await new Promise<void>((resolve) => daemon.on("exit", () => resolve()));
+    await waitForExit;
 
-    assert.equal(synced, true, "daemon should have synced the stash");
+    assert.equal(
+      synced,
+      true,
+      `daemon should have synced the stash\nstdout:\n${daemonStdout}\nstderr:\n${daemonStderr}\nlast status: ${JSON.stringify(lastStatus)}`,
+    );
 
     const status = JSON.parse(await readFile(statusPath, "utf8"));
     assert.ok(status.lastSync, "status should have a lastSync timestamp");

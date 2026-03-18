@@ -149,16 +149,25 @@ export class BackgroundDaemon {
 
     this.started = true;
     await mkdir(dirname(this.configPath), { recursive: true });
-    this.configSubscription = await this.subscribeFn(dirname(this.configPath), (error, events) => {
-      if (error) {
-        this.log(`background daemon config watch failed: ${error.message}`);
-        return;
-      }
-      if (!events.some((event) => event.path === this.configPath)) {
-        return;
-      }
-      void this.reload();
-    });
+    try {
+      this.configSubscription = await this.subscribeFn(
+        dirname(this.configPath),
+        (error, events) => {
+          if (error) {
+            this.log(`background daemon config watch failed: ${error.message}`);
+            return;
+          }
+          if (!events.some((event) => event.path === this.configPath)) {
+            return;
+          }
+          void this.reload();
+        },
+      );
+    } catch (error) {
+      this.log(
+        `native config watcher unavailable, config hot-reload disabled: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
 
     await this.reload();
   }

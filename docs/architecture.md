@@ -1,12 +1,13 @@
 # Architecture
 
-Stash has four main pieces:
+Stash has five main pieces:
 
 - `src/cli.ts` and `src/cli-main.ts` handle command-line behavior, prompting, global config updates, and OS service commands.
 - `src/watch.ts` owns the reusable watch loop for polling, filesystem events, debounce, and sync scheduling.
 - `src/daemon.ts` manages one headless `Watch` instance per registered stash and persists background status/log files.
 - `src/stash.ts` owns file scanning, reconciliation, snapshots, local metadata, and the sync lifecycle.
 - `src/providers/` implements remote transports. Providers fetch and push state, but do not merge files or mutate local disk directly.
+- `@rupertsworld/daemon` handles OS service installation/status for background sync.
 
 ## Repository Layout
 
@@ -17,7 +18,6 @@ src/
   watch.ts
   daemon.ts
   stash.ts
-  service/
   providers/
   ui/
   utils/
@@ -33,7 +33,7 @@ The repo is intentionally shaped like a normal package. Durable behavior and arc
 - `Stash` is the core engine. It decides what changed, how local and remote changes reconcile, when to push, and what to write locally.
 - `Watch` is reusable scheduling/orchestration logic. It must stay headless: no stdin handling, no TTY rendering, no service-specific behavior.
 - Providers are transport-only. They expose `fetch()`, `get()`, and `push()` and should stay unaware of local file semantics.
-- `src/service/` is intentionally isolated from stash internals. It may not import `Stash` or other stash-specific modules.
+- OS service lifecycle behavior lives in `@rupertsworld/daemon`, not in local service-specific source files.
 - UI helpers in `src/ui/` are presentation code for sync and watch output; they should not carry sync logic.
 
 ## `.stash/` Directory

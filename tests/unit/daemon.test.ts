@@ -168,3 +168,62 @@ test("daemon: caps sync.log at 1MB by truncating the oldest lines", async () => 
     await rm(workspace, { recursive: true, force: true });
   }
 });
+
+test("daemon: continues in poll-only mode when native watcher throws", async () => {
+  const workspace = await makeTempDir("stash-daemon-no-watcher");
+  const stashDir = join(workspace, "stash");
+  const configPath = join(workspace, "config.json");
+  const logs: string[] = [];
+  let started = false;
+
+  try {
+    await mkdir(join(stashDir, ".stash"), { recursive: true });
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        providers: {},
+        background: { stashes: [stashDir] },
+      } satisfies GlobalConfig),
+      "utf8",
+    );
+
+    const daemon = new BackgroundDaemon({
+      configPath,
+      readGlobalConfig: async () => ({
+        providers: {},
+        background: { stashes: [stashDir] },
+      }),
+      log: (message) => logs.push(message),
+      subscribe: async () => {
+        throw new Error("inotify limit reached");
+      },
+      createWatch: async ({ onStatus }) => ({
+        start: async () => {
+          started = true;
+          await onStatus({
+            kind: "checked",
+            lastSync: new Date("2026-03-11T14:30:00.000Z"),
+            nextCheck: new Date("2026-03-11T14:31:00.000Z"),
+            error: null,
+          });
+        },
+        stop: async () => {},
+      }),
+    });
+
+    await daemon.start();
+
+    assert.equal(started, true, "watch should still start despite watcher failure");
+    assert.ok(
+      logs.some((m) => m.includes("native config watcher unavailable")),
+      "should log watcher fallback",
+    );
+
+    const statusPath = join(stashDir, ".stash", "status.json");
+    assert.equal(existsSync(statusPath), true, "status.json should still be written");
+
+    await daemon.stop();
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});

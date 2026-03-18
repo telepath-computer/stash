@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { access, constants, readFile } from "node:fs/promises";
 import { basename, delimiter, join, resolve } from "node:path";
+import { Daemon, UnsupportedPlatformError } from "@rupertsworld/daemon";
 import { Command, Option } from "commander";
 import { input, password } from "@inquirer/prompts";
 import {
@@ -13,7 +14,6 @@ import {
   writeGlobalConfig,
 } from "./global-config.ts";
 import { runDaemon } from "./daemon.ts";
-import * as service from "./service/index.ts";
 import { providers } from "./providers/index.ts";
 import { Stash } from "./stash.ts";
 import { createColors } from "./ui/color.ts";
@@ -26,17 +26,18 @@ import type { Field, GlobalConfig, ProviderClass } from "./types.ts";
 const SERVICE_NAME = "stash-background";
 const SERVICE_DESCRIPTION = "Stash background sync";
 
+type ServiceHandle = {
+  install(): Promise<void>;
+  uninstall(): Promise<void>;
+  status(): Promise<{ installed: boolean; running: boolean }>;
+};
+
 type CliDependencies = {
   cwd?: () => string;
   readGlobalConfig?: () => Promise<GlobalConfig>;
   writeGlobalConfig?: (config: GlobalConfig) => Promise<void>;
-  service?: {
-    install: typeof service.install;
-    uninstall: typeof service.uninstall;
-    status: typeof service.status;
-  };
+  service?: ServiceHandle;
   runDaemon?: () => Promise<void>;
-  resolveStashCommand?: () => Promise<string>;
   stdout?: NodeJS.WriteStream;
   stderr?: NodeJS.WriteStream;
 };
@@ -70,7 +71,7 @@ function writeLine(stream: NodeJS.WriteStream, text: string): void {
 }
 
 function isUnsupportedPlatformError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes("not supported on this platform yet");
+  return error instanceof UnsupportedPlatformError;
 }
 
 export async function resolveStashCommand(): Promise<string> {
@@ -131,14 +132,14 @@ async function readBackgroundStatus(dir: string): Promise<PersistedBackgroundSta
 }
 
 async function warnIfServiceUnavailable(
-  serviceModule: CliDependencies["service"],
+  serviceHandle: ServiceHandle | undefined,
   stderr: NodeJS.WriteStream,
 ): Promise<void> {
-  if (!serviceModule) {
+  if (!serviceHandle) {
     return;
   }
   try {
-    const status = await serviceModule.status({ name: SERVICE_NAME });
+    const status = await serviceHandle.status();
     if (!status.installed) {
       writeLine(stderr, "warning: background service is not installed");
     }
@@ -187,7 +188,7 @@ async function registerBackgroundStash(
   dir: string,
   readConfig: () => Promise<GlobalConfig>,
   writeConfig: (config: GlobalConfig) => Promise<void>,
-  serviceModule: CliDependencies["service"],
+  serviceHandle: ServiceHandle | undefined,
   stderr: NodeJS.WriteStream,
 ): Promise<void> {
   const globalConfig = await readConfig();
@@ -196,17 +197,15 @@ async function registerBackgroundStash(
     writeLine(stderr, "warning: this stash won't sync until a provider is connected");
   }
   await writeConfig(addBackgroundStash(globalConfig, dir));
-  await warnIfServiceUnavailable(serviceModule, stderr);
+  await warnIfServiceUnavailable(serviceHandle, stderr);
 }
 
 async function runConnect(
   providerName: string,
   valuesFromCli: Record<string, string | boolean | undefined>,
-  deps: Required<
-    Pick<CliDependencies, "cwd" | "readGlobalConfig" | "writeGlobalConfig"> & {
-      service: NonNullable<CliDependencies["service"]>;
-    }
-  >,
+  deps: Required<Pick<CliDependencies, "cwd" | "readGlobalConfig" | "writeGlobalConfig">> & {
+    service?: ServiceHandle;
+  },
   stdout: NodeJS.WriteStream,
   stderr: NodeJS.WriteStream,
 ): Promise<void> {
@@ -333,25 +332,18 @@ async function runStatus(
 }
 
 async function runBackgroundInstall(
-  serviceModule: NonNullable<CliDependencies["service"]>,
-  resolveCommand: () => Promise<string>,
+  serviceHandle: ServiceHandle,
   stdout: NodeJS.WriteStream,
 ): Promise<void> {
-  const command = await resolveCommand();
-  await serviceModule.install({
-    name: SERVICE_NAME,
-    description: SERVICE_DESCRIPTION,
-    command,
-    args: ["background", "watch"],
-  });
+  await serviceHandle.install();
   writeLine(stdout, "Installed background service.");
 }
 
 async function runBackgroundUninstall(
-  serviceModule: NonNullable<CliDependencies["service"]>,
+  serviceHandle: ServiceHandle,
   stdout: NodeJS.WriteStream,
 ): Promise<void> {
-  await serviceModule.uninstall({ name: SERVICE_NAME });
+  await serviceHandle.uninstall();
   writeLine(stdout, "Uninstalled background service.");
 }
 
@@ -360,12 +352,12 @@ async function runBackgroundAdd(
   cwd: () => string,
   readConfig: () => Promise<GlobalConfig>,
   writeConfig: (config: GlobalConfig) => Promise<void>,
-  serviceModule: CliDependencies["service"],
+  serviceHandle: ServiceHandle | undefined,
   stdout: NodeJS.WriteStream,
   stderr: NodeJS.WriteStream,
 ): Promise<void> {
   const dir = resolve(dirArg ?? cwd());
-  await registerBackgroundStash(dir, readConfig, writeConfig, serviceModule, stderr);
+  await registerBackgroundStash(dir, readConfig, writeConfig, serviceHandle, stderr);
   writeLine(stdout, `Registered ${dir} for background sync.`);
 }
 
@@ -384,16 +376,15 @@ async function runBackgroundRemove(
 
 async function runBackgroundStatus(
   readConfig: () => Promise<GlobalConfig>,
-  serviceModule: NonNullable<CliDependencies["service"]>,
+  serviceHandle: ServiceHandle,
   stdout: NodeJS.WriteStream,
 ): Promise<void> {
   const { dim, green, red } = createColors(stdout);
-  const ora = stdout.isTTY ? (await import("ora")).default : null;
 
   let serviceRunning = false;
   let serviceMessage: string | null = null;
   try {
-    const current = await serviceModule.status({ name: SERVICE_NAME });
+    const current = await serviceHandle.status();
     if (!current.installed) {
       serviceMessage = dim("service not installed — run `stash background install`");
     } else if (current.running) {
@@ -411,14 +402,18 @@ async function runBackgroundStatus(
 
   const globalConfig = await readConfig();
   const stashes = getBackgroundStashes(globalConfig);
+  if (serviceRunning) {
+    writeLine(stdout, dim("stash is syncing in the background"));
+  } else if (serviceMessage) {
+    writeLine(stdout, serviceMessage);
+  }
+
   if (stashes.length === 0) {
-    if (serviceMessage) {
-      writeLine(stdout, serviceMessage);
-      writeLine(stdout, "");
-    }
-    writeLine(stdout, dim("no stashes registered — run `stash background add` to add one"));
+    writeLine(stdout, dim("\nno stashes registered — run `stash background add` to add one"));
     return;
   }
+
+  writeLine(stdout, "");
 
   for (const dir of stashes) {
     if (!existsSync(dir)) {
@@ -452,17 +447,6 @@ async function runBackgroundStatus(
     }
   }
 
-  if (serviceRunning) {
-    stdout.write("\n");
-    if (ora) {
-      ora({ text: dim("stash is syncing in the background"), stream: stdout }).start();
-    } else {
-      writeLine(stdout, "stash is syncing in the background");
-    }
-  } else if (serviceMessage) {
-    writeLine(stdout, "");
-    writeLine(stdout, serviceMessage);
-  }
 }
 
 function addFieldOptions(command: Command, fields: Field[]): void {
@@ -471,13 +455,24 @@ function addFieldOptions(command: Command, fields: Field[]): void {
   }
 }
 
+async function createDefaultService(): Promise<ServiceHandle> {
+  const command = await resolveStashCommand();
+  return new Daemon({
+    name: SERVICE_NAME,
+    description: SERVICE_DESCRIPTION,
+    command,
+    args: ["background", "watch"],
+    env: process.env.PATH ? { PATH: process.env.PATH } : undefined,
+  });
+}
+
 export async function main(argv = process.argv, deps: CliDependencies = {}): Promise<void> {
   const cwd = deps.cwd ?? (() => process.cwd());
   const readConfig = deps.readGlobalConfig ?? readGlobalConfig;
   const writeConfig = deps.writeGlobalConfig ?? writeGlobalConfig;
-  const serviceModule = deps.service ?? service;
+  const serviceHandle = deps.service;
+  const getService = async () => serviceHandle ?? (await createDefaultService());
   const runDaemonCommand = deps.runDaemon ?? runDaemon;
-  const resolveCommand = deps.resolveStashCommand ?? resolveStashCommand;
   const stdout = deps.stdout ?? process.stdout;
   const stderr = deps.stderr ?? process.stderr;
 
@@ -515,14 +510,16 @@ export async function main(argv = process.argv, deps: CliDependencies = {}): Pro
     .option("--background", "Register this stash for background syncing")
     .allowUnknownOption(true)
     .action(async (providerName: string, _opts: unknown, command: Command) => {
+      const opts = command.opts() as Record<string, string | boolean | undefined>;
+      const svc = opts.background === true ? await getService() : undefined;
       await runConnect(
         providerName,
-        command.opts() as Record<string, string | boolean | undefined>,
+        opts,
         {
           cwd,
           readGlobalConfig: readConfig,
           writeGlobalConfig: writeConfig,
-          service: serviceModule,
+          service: svc,
         },
         stdout,
         stderr,
@@ -561,20 +558,21 @@ export async function main(argv = process.argv, deps: CliDependencies = {}): Pro
   backgroundCommand
     .command("install")
     .description("Install the background service")
-    .action(() => runBackgroundInstall(serviceModule, resolveCommand, stdout));
+    .action(async () => runBackgroundInstall(await getService(), stdout));
 
   backgroundCommand
     .command("uninstall")
     .description("Remove the background service")
-    .action(() => runBackgroundUninstall(serviceModule, stdout));
+    .action(async () => runBackgroundUninstall(await getService(), stdout));
 
   backgroundCommand
     .command("add")
     .description("Register a stash for background syncing")
     .argument("[dir]", "Stash directory")
-    .action((dirArg?: string) =>
-      runBackgroundAdd(dirArg, cwd, readConfig, writeConfig, serviceModule, stdout, stderr),
-    );
+    .action(async (dirArg?: string) => {
+      const svc = await getService().catch(() => undefined);
+      await runBackgroundAdd(dirArg, cwd, readConfig, writeConfig, svc, stdout, stderr);
+    });
 
   backgroundCommand
     .command("remove")
@@ -585,7 +583,7 @@ export async function main(argv = process.argv, deps: CliDependencies = {}): Pro
   backgroundCommand
     .command("status")
     .description("Show background service and stash status")
-    .action(() => runBackgroundStatus(readConfig, serviceModule, stdout));
+    .action(async () => runBackgroundStatus(readConfig, await getService(), stdout));
 
   backgroundCommand
     .command("watch", { hidden: true })

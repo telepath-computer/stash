@@ -125,3 +125,31 @@ test("watch: stop waits for an in-flight sync to finish", async () => {
   await stopPromise;
   assert.equal(finished, true);
 });
+
+test("watch: falls back to poll-only when subscribe throws", async () => {
+  const stash = new FakeStash();
+  const statuses: WatchStatus[] = [];
+  const dir = "/tmp/stash-watch-no-native";
+
+  const watch = new Watch(stash as any, {
+    dir,
+    pollMs: 50,
+    subscribe: async () => {
+      throw new Error("inotify limit reached");
+    },
+    onStatus: (status) => {
+      statuses.push(status);
+    },
+  });
+
+  await watch.start();
+  await delay(20);
+
+  assert.equal(stash.syncCalls, 1, "initial sync should still run");
+  assert.equal(statuses[0]?.kind, "checked", "should report checked status");
+
+  await delay(80);
+  assert.ok(stash.syncCalls >= 2, "poll timer should trigger additional syncs");
+
+  await watch.stop();
+});

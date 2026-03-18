@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+.stash/
+.git/
+.scratch/
+.claude/

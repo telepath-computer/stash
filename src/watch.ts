@@ -111,30 +111,35 @@ export class Watch {
     }
 
     this.started = true;
-    this.subscription = await this.subscribeFn(this.dir, (error, events) => {
-      if (error) {
-        this.schedulePoll();
-        this.onStatus?.({
-          kind: "error",
-          error: error instanceof Error ? error.message : String(error),
-          lastSync: this.lastSuccessfulSync,
-          nextCheck: this.nextCheckAt,
-        });
-        return;
-      }
+    try {
+      this.subscription = await this.subscribeFn(this.dir, (error, events) => {
+        if (error) {
+          this.schedulePoll();
+          this.onStatus?.({
+            kind: "error",
+            error: error instanceof Error ? error.message : String(error),
+            lastSync: this.lastSuccessfulSync,
+            nextCheck: this.nextCheckAt,
+          });
+          return;
+        }
 
-      for (const event of events) {
-        const relPath = eventPath(this.dir, event.path);
-        if (!relPath) {
-          continue;
+        for (const event of events) {
+          const relPath = eventPath(this.dir, event.path);
+          if (!relPath) {
+            continue;
+          }
+          if (event.type !== "delete" && isSymlink(event.path)) {
+            continue;
+          }
+          this.queueFilesystemEvent();
+          break;
         }
-        if (event.type !== "delete" && isSymlink(event.path)) {
-          continue;
-        }
-        this.queueFilesystemEvent();
-        break;
-      }
-    });
+      });
+    } catch {
+      // Native FS watcher unavailable (e.g. Docker, missing inotify).
+      // Continue in poll-only mode — schedulePoll will still fire.
+    }
 
     this.startSync();
   }

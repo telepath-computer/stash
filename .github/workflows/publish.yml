@@ -1,0 +1,43 @@
+name: Publish to npm
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Determine version and publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          LOCAL_VERSION=$(node -p "require('./package.json').version")
+          PREV_VERSION=$(git show HEAD~1:package.json 2>/dev/null | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).version" 2>/dev/null || echo "")
+
+          if [ "$LOCAL_VERSION" = "$PREV_VERSION" ] || [ -z "$PREV_VERSION" ]; then
+            npm version patch --no-git-tag-version
+            VERSION=$(node -p "require('./package.json').version")
+            echo "Auto-bumped patch: $LOCAL_VERSION -> $VERSION"
+          else
+            VERSION=$LOCAL_VERSION
+            echo "Using explicit version: $VERSION"
+          fi
+
+          npm publish || echo "Version $VERSION already published, skipping"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json
+          git diff --cached --quiet || (git commit -m "bump version to $VERSION [skip ci]" && git push)

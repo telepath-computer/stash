@@ -413,14 +413,18 @@ test("GitHubProvider.push: text-only push includes snapshot", async () => {
   }
 });
 
-test("GitHubProvider.push: 422 ref update throws PushConflictError", async () => {
+test("GitHubProvider.push: 422 ref update retries only when main actually moved", async () => {
   const api = new MockGitHubAPI();
   const cleanup = api
     .onPost("/repos/user/repo/git/trees", () => ({ status: 201, body: { sha: "tree-new" } }))
     .onPost("/repos/user/repo/git/commits", () => ({ status: 201, body: { sha: "commit-new" } }))
     .on("PATCH", "/repos/user/repo/git/refs/heads/main", {
       status: 422,
-      body: { message: "Update failed" },
+      body: { message: "Reference update failed" },
+    })
+    .on("GET", "/repos/user/repo/branches/main", {
+      status: 200,
+      body: { commit: { sha: "head-moved", commit: { tree: { sha: "tree-moved" } } } },
     })
     .install();
 
@@ -435,6 +439,47 @@ test("GitHubProvider.push: 422 ref update throws PushConflictError", async () =>
         snapshot: {},
       }),
       PushConflictError,
+    );
+    api.assertDone();
+  } finally {
+    cleanup();
+  }
+});
+
+test("GitHubProvider.push: 422 ref update with unchanged head surfaces concise error", async () => {
+  const api = new MockGitHubAPI();
+  const cleanup = api
+    .onPost("/repos/user/repo/git/trees", () => ({ status: 201, body: { sha: "tree-new" } }))
+    .onPost("/repos/user/repo/git/commits", () => ({ status: 201, body: { sha: "commit-new" } }))
+    .on("PATCH", "/repos/user/repo/git/refs/heads/main", {
+      status: 422,
+      body: { message: "Reference update failed" },
+    })
+    .on("GET", "/repos/user/repo/branches/main", {
+      status: 200,
+      body: { commit: { sha: "head", commit: { tree: { sha: "tree" } } } },
+    })
+    .install();
+
+  try {
+    const provider = makeProvider();
+    (provider as any).headSha = "head";
+    (provider as any).baseTreeSha = "tree";
+    await assert.rejects(
+      provider.push({
+        files: new Map([["hello.md", "hi"]]),
+        deletions: [],
+        snapshot: {},
+      }),
+      (error: unknown) => {
+        assert.equal(error instanceof PushConflictError, false);
+        assert.equal(error instanceof Error, true);
+        assert.equal(
+          (error as Error).message,
+          "Remote ref update rejected by GitHub. This usually means your token cannot push to this repository or the branch is protected.",
+        );
+        return true;
+      },
     );
     api.assertDone();
   } finally {

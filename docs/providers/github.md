@@ -73,11 +73,14 @@ Important rules:
 - Text files are inlined in the tree request.
 - Binary files are uploaded as blobs first.
 - Deletions are represented with `sha: null` tree entries.
-- If the main ref moved since `fetch()`, the provider throws `PushConflictError`.
+- On GitHub `422` from the ref update, the provider reloads `main` and compares its head SHA with the SHA captured during `fetch()`.
+- If that head SHA changed, the provider throws `PushConflictError`.
+- If that head SHA did not change, the provider treats the `422` as some other GitHub rejection and surfaces a normal error instead.
 
 ## Error Model
 
 - ref moved during push -> `PushConflictError`
+- ref update rejected by GitHub without a head change -> `Remote ref update rejected by GitHub. This usually means your token cannot push to this repository or the branch is protected.`
 - GitHub rate limit exceeded -> descriptive error with reset time when available
 - auth failure -> descriptive error
 - other network and API failures bubble up to the caller

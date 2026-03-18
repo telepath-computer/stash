@@ -3,18 +3,14 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { UnsupportedPlatformError } from "@rupertsworld/daemon";
 import { main } from "../../src/cli-main.ts";
 import { Stash } from "../../src/stash.ts";
 import type { GlobalConfig } from "../../src/types.ts";
 
 type ServiceCalls = {
-  install: Array<{
-    name: string;
-    description: string;
-    command: string;
-    args: string[];
-  }>;
-  uninstall: Array<{ name: string }>;
+  install: number;
+  uninstall: number;
   status: number;
 };
 
@@ -35,7 +31,6 @@ async function runMain(
   options?: {
     config?: GlobalConfig;
     serviceStatus?: { installed: boolean; running: boolean } | Error;
-    resolveStashCommand?: () => Promise<string>;
   },
 ): Promise<RunResult> {
   let config: GlobalConfig = structuredClone(
@@ -49,8 +44,8 @@ async function runMain(
   let stdout = "";
   let stderr = "";
   const calls: ServiceCalls = {
-    install: [],
-    uninstall: [],
+    install: 0,
+    uninstall: 0,
     status: 0,
   };
 
@@ -61,11 +56,11 @@ async function runMain(
       config = structuredClone(nextConfig);
     },
     service: {
-      install: async (installOptions) => {
-        calls.install.push(installOptions);
+      install: async () => {
+        calls.install += 1;
       },
-      uninstall: async (uninstallOptions) => {
-        calls.uninstall.push(uninstallOptions);
+      uninstall: async () => {
+        calls.uninstall += 1;
       },
       status: async () => {
         calls.status += 1;
@@ -75,7 +70,6 @@ async function runMain(
         return options?.serviceStatus ?? { installed: false, running: false };
       },
     },
-    resolveStashCommand: options?.resolveStashCommand ?? (async () => "/opt/homebrew/bin/stash"),
     stdout: {
       isTTY: false,
       write(chunk: string) {
@@ -179,7 +173,7 @@ test("background status prints unsupported-platform service state and per-stash 
           stashes: [dir],
         },
       },
-      serviceStatus: new Error("not supported on this platform yet"),
+      serviceStatus: new UnsupportedPlatformError(),
     });
 
     assert.equal(result.stdout.includes("not supported on this platform"), true);
@@ -190,22 +184,14 @@ test("background status prints unsupported-platform service state and per-stash 
   }
 });
 
-test("background install resolves the stash binary and delegates to the service module", async () => {
+test("background install delegates to the service module", async () => {
   const dir = await makeTempDir("stash-cli-background-install");
 
   try {
-    const result = await runMain(dir, ["background", "install"], {
-      resolveStashCommand: async () => "/custom/bin/stash",
-    });
+    const result = await runMain(dir, ["background", "install"]);
 
-    assert.deepEqual(result.calls.install, [
-      {
-        name: "stash-background",
-        description: "Stash background sync",
-        command: "/custom/bin/stash",
-        args: ["background", "watch"],
-      },
-    ]);
+    assert.equal(result.calls.install, 1);
+    assert.equal(result.stdout.includes("Installed background service"), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

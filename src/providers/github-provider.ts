@@ -320,7 +320,14 @@ export class GitHubProvider implements Provider {
         force: false,
       });
       if (refRes.status === 422) {
-        throw new PushConflictError("Remote main moved during push");
+        const currentHeadSha = await this.fetchMainHeadSha();
+        if (currentHeadSha && currentHeadSha !== this.headSha) {
+          throw new PushConflictError("Remote main moved during push");
+        }
+        throw new Error(
+          "Remote ref update rejected by GitHub. " +
+            "This usually means your token cannot push to this repository or the branch is protected.",
+        );
       }
       await this.ensureOk(refRes, "Failed to update main ref");
     } else {
@@ -397,6 +404,12 @@ export class GitHubProvider implements Provider {
     if (response.status === 401) {
       throw new Error("GitHub authentication failed. Check your token.");
     }
+    if (response.status === 403) {
+      throw new Error(
+        "GitHub permission denied (403). " +
+          "Ensure your token has the required scopes (e.g. 'repo' for private repositories).",
+      );
+    }
 
     return response;
   }
@@ -409,6 +422,17 @@ export class GitHubProvider implements Provider {
     const status =
       statusText.length > 0 ? `${response.status} ${statusText}` : `${response.status}`;
     throw new Error(`${message} (${status})`);
+  }
+
+  private async fetchMainHeadSha(): Promise<string | null> {
+    const branchRes = await this.rest("GET", this.repoPath("/branches/main"));
+    if (branchRes.status === 404) {
+      return null;
+    }
+
+    await this.ensureOk(branchRes, "Failed to reload main branch");
+    const branch = await branchRes.json();
+    return typeof branch.commit?.sha === "string" ? (branch.commit.sha as string) : null;
   }
 
   private async fetchBlobMetadata(paths: string[]): Promise<Map<string, BlobResult>> {
