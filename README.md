@@ -19,7 +19,19 @@ stash connect github --repo user/repo --background
 
 You can initialize a directory explicitly with `stash init`, or let `stash connect` create `.stash/` for you automatically.
 
-You'll need a GitHub [personal access token](https://github.com/settings/tokens). A classic token needs the `repo` scope. A fine-grained token needs **Contents: Read and write** permission on the target repo.
+You'll need a GitHub personal access token. We recommend a **fine-grained token** scoped to only the repos you use with stash.
+
+### Creating a GitHub Token
+
+1. Go to [github.com/settings/personal-access-tokens/new](https://github.com/settings/personal-access-tokens/new)
+2. Give it a name (e.g. `stash`)
+3. Under **Repository access**, select **Only select repositories** and pick the repo(s) you'll sync
+4. Under **Repository permissions**, set **Contents** to **Read and write**
+5. Click **Generate token** and copy it
+
+Use this token when running `stash setup github`.
+
+> A classic token with the `repo` scope also works, but grants broader access than necessary.
 
 ## How It Works
 
