@@ -18,20 +18,25 @@ npm run stash -- sync
 ## Test Commands
 
 ```bash
-npm test
-npm run test:e2e
-npm run test:all
+npm test                        # unit + integration (local)
+npm run test:e2e                # e2e against real GitHub (local)
+npm run test:all                # unit + integration + e2e (local)
+npm run test:vm                 # full suite on a Linux VM (DigitalOcean)
+npm run test:vm -- unit         # just unit + integration on VM
+npm run test:vm -- e2e          # just e2e on VM
+npm run test:vm -- service      # just systemd service lifecycle on VM
 ```
 
-`npm run test:e2e` loads `.env` automatically if it exists by using Node's `--env-file-if-exists=.env` support. This is convenient for local `GITHUB_TOKEN` setup without exporting the variable in your shell first.
+`npm run test:e2e` loads `.env` automatically via Node's `--env-file-if-exists=.env`. The VM script loads `.env` from the project root at startup.
 
 ## Test Layers
 
-- Unit tests cover core merge, snapshot, provider, and terminal-formatting behavior.
-- Integration tests cover multi-step sync behavior with fake or mocked providers.
-- End-to-end tests exercise real GitHub behavior and require `GITHUB_TOKEN`.
+- **Unit tests** cover core merge, snapshot, provider, and terminal-formatting behavior.
+- **Integration tests** cover multi-step sync behavior with fake or mocked providers.
+- **End-to-end tests** exercise real GitHub behavior and require `GITHUB_TOKEN`.
+- **VM tests** run the full suite on a real Linux VM plus systemd service lifecycle tests. Requires `DO_TOKEN` (DigitalOcean API token).
 
-If `GITHUB_TOKEN` is not set, end-to-end tests should be skipped rather than treated as local development failures.
+If `GITHUB_TOKEN` is not set, end-to-end tests are skipped rather than treated as failures.
 
 ## End-To-End Requirements
 
@@ -57,6 +62,17 @@ The e2e suite also assumes:
 - some flows may hit GitHub secondary rate limits, so the suite includes pacing and retry behavior around repo creation and sync
 
 If these requirements are not met, `npm run test:e2e` may succeed with all tests skipped rather than actually validating GitHub-backed behavior.
+
+## VM Test Requirements
+
+The VM test suite in `tests/vm/` provisions a DigitalOcean droplet, rsyncs the project (including `.env`), runs the full test suite on Linux, and optionally tests systemd service lifecycle.
+
+- `DO_TOKEN` must be set (DigitalOcean API token with droplet create/read/delete and SSH key read permissions).
+- An SSH key at `~/.ssh/id_ed25519` is required (uploaded to DO automatically on first run).
+- The droplet is destroyed after tests unless `VM_KEEP=1` is set.
+- The `service` mode tests `stash background install/status/uninstall` against real systemd.
+
+Known issues with the service tests are documented in `tests/vm/KNOWN-ISSUES.md`.
 
 ## Docs Maintenance
 
