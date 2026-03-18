@@ -19,6 +19,8 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
+      - run: npm ci
+
       - name: Determine version and publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -35,9 +37,4 @@ jobs:
             echo "Using explicit version: $VERSION"
           fi
 
-          npm publish || echo "Version $VERSION already published, skipping"
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json
-          git diff --cached --quiet || (git commit -m "bump version to $VERSION [skip ci]" && git push)
+          npm publish
