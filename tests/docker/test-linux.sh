@@ -9,10 +9,11 @@ fi
 
 IMAGE_NAME="stash-test-linux"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 echo "Using $DOCKER"
 echo "Building test image..."
-$DOCKER build -f Dockerfile.test -t "$IMAGE_NAME" "$SCRIPT_DIR"
+$DOCKER build -f "$SCRIPT_DIR/Dockerfile" -t "$IMAGE_NAME" "$PROJECT_ROOT"
 
 MODE="${1:-unit}"
 
