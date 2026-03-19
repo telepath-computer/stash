@@ -165,9 +165,7 @@ No connection configured — run `stash connect <provider>` first
 
 Prints local status for the current stash.
 
-It shows configured connections plus local `added`, `modified`, `deleted`, and `lastSync` status based on disk versus `snapshot.json`.
-
-If the current stash is registered for background sync, the CLI also prints a short hint toward `stash status --all`.
+If the current stash is registered for background sync, the CLI prints the background sync state first, followed by a blank line, then provider connections with local `added`, `modified`, `deleted`, and `lastSync` status based on disk versus `snapshot.json`.
 
 If run outside a stash directory:
 

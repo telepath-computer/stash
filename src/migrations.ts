@@ -62,6 +62,10 @@ const renameLocalMetadataLayoutMigration: Migration = {
 
 const migrations: Migration[] = [renameLocalMetadataLayoutMigration];
 
+export function needsMigration(dir: string): boolean {
+  return migrations.some((migration) => migration.check(dir));
+}
+
 export async function ensureMigration(dir: string): Promise<void> {
   for (const migration of migrations) {
     if (!(await migration.check(dir))) {

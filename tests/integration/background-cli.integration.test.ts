@@ -8,6 +8,7 @@ import { UnsupportedPlatformError } from "@rupertsworld/daemon";
 import { main } from "../../src/cli-main.ts";
 import { Stash } from "../../src/stash.ts";
 import type { GlobalConfig } from "../../src/types.ts";
+import { assertMigration, writeLegacyLayout } from "../helpers/assert-migration.ts";
 
 type ServiceCalls = {
   install: number;
@@ -94,7 +95,14 @@ test("connect registers the current stash path in the background registry", asyn
   const dir = await makeTempDir("stash-cli-connect-register");
 
   try {
-    const result = await runMain(dir, ["connect", "github", "--token", "test-token", "--repo", "user/repo"]);
+    const result = await runMain(dir, [
+      "connect",
+      "github",
+      "--token",
+      "test-token",
+      "--repo",
+      "user/repo",
+    ]);
     assert.deepEqual(result.config.background?.stashes, [resolve(dir)]);
     assert.equal(result.stdout.includes("Connected github."), true);
   } finally {
@@ -150,10 +158,21 @@ test("reconnecting an already-registered stash is a registry no-op", async () =>
   const dir = await makeTempDir("stash-cli-connect-reregister");
 
   try {
-    const first = await runMain(dir, ["connect", "github", "--token", "test-token", "--repo", "user/repo"]);
-    const second = await runMain(dir, ["connect", "github", "--token", "test-token", "--repo", "user/repo"], {
-      config: first.config,
-    });
+    const first = await runMain(dir, [
+      "connect",
+      "github",
+      "--token",
+      "test-token",
+      "--repo",
+      "user/repo",
+    ]);
+    const second = await runMain(
+      dir,
+      ["connect", "github", "--token", "test-token", "--repo", "user/repo"],
+      {
+        config: first.config,
+      },
+    );
     assert.deepEqual(second.config, {
       providers: {
         github: { token: "test-token" },
@@ -213,7 +232,14 @@ test("disconnect with no provider disconnects the stash completely", async () =>
   const dir = await makeTempDir("stash-cli-disconnect-all");
 
   try {
-    const connected = await runMain(dir, ["connect", "github", "--token", "test-token", "--repo", "user/repo"]);
+    const connected = await runMain(dir, [
+      "connect",
+      "github",
+      "--token",
+      "test-token",
+      "--repo",
+      "user/repo",
+    ]);
     const disconnected = await runMain(dir, ["disconnect"], {
       config: connected.config,
     });
@@ -230,7 +256,14 @@ test("disconnect provider removes .stash and unregisters when it was the last pr
   const dir = await makeTempDir("stash-cli-disconnect-remove");
 
   try {
-    const connected = await runMain(dir, ["connect", "github", "--token", "test-token", "--repo", "user/repo"]);
+    const connected = await runMain(dir, [
+      "connect",
+      "github",
+      "--token",
+      "test-token",
+      "--repo",
+      "user/repo",
+    ]);
     const disconnected = await runMain(dir, ["disconnect", "github"], {
       config: connected.config,
     });
@@ -405,11 +438,7 @@ test("status shows the current stash and hints toward --all when background sync
       ),
       "utf8",
     );
-    await writeFile(
-      join(dir, ".stash", "snapshot.json"),
-      JSON.stringify({}, null, 2),
-      "utf8",
-    );
+    await writeFile(join(dir, ".stash", "snapshot.json"), JSON.stringify({}, null, 2), "utf8");
 
     const result = await runMain(dir, ["status"], {
       config: {
@@ -458,6 +487,160 @@ test("status outside a stash tells the user to use --all", async () => {
     assert.equal(
       (result as Error).message,
       "Not in a stash directory — run `stash status --all` to view all stashes",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("migration stops the running daemon before migrating and restarts it after", async () => {
+  const dir = await makeTempDir("stash-cli-migrate-bounce");
+
+  try {
+    await writeLegacyLayout(dir, {
+      connections: { github: { repo: "user/repo" } },
+      snapshotLocal: { "note.md": "base" },
+    });
+
+    const result = await runMain(dir, ["status"], {
+      config: {
+        providers: {},
+        background: { stashes: [resolve(dir)] },
+      },
+      serviceStatus: { installed: true, running: true },
+    });
+
+    assert.equal(result.calls.uninstall, 1, "daemon should be stopped before migration");
+    assert.equal(result.calls.install, 1, "daemon should be restarted after migration");
+    await assertMigration(dir, {
+      connections: { github: { repo: "user/repo" } },
+      snapshotLocal: { "note.md": "base" },
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("migration does not bounce the daemon when it is not running", async () => {
+  const dir = await makeTempDir("stash-cli-migrate-no-bounce");
+
+  try {
+    await writeLegacyLayout(dir, {
+      connections: { github: { repo: "user/repo" } },
+    });
+
+    const result = await runMain(dir, ["status"], {
+      config: {
+        providers: {},
+        background: { stashes: [resolve(dir)] },
+      },
+      serviceStatus: { installed: false, running: false },
+    });
+
+    assert.equal(result.calls.uninstall, 0, "daemon should not be stopped when not running");
+    assert.equal(result.calls.install, 0, "daemon should not be installed when it was not running");
+    await assertMigration(dir, {
+      connections: { github: { repo: "user/repo" } },
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("migration bounces daemon for status --all when a background stash needs migration", async () => {
+  const dir = await makeTempDir("stash-cli-migrate-status-all");
+
+  try {
+    await writeLegacyLayout(dir, {
+      connections: { github: { repo: "user/repo" } },
+      snapshotLocal: { "note.md": "base" },
+    });
+    await writeFile(join(dir, ".stash", "snapshot.json"), JSON.stringify({}, null, 2), "utf8");
+
+    const result = await runMain(dir, ["status", "--all"], {
+      config: {
+        providers: {},
+        background: { stashes: [dir] },
+      },
+      serviceStatus: { installed: true, running: true },
+    });
+
+    assert.equal(result.calls.uninstall, 1, "daemon should be stopped before migration");
+    assert.equal(result.calls.install, 1, "daemon should be restarted after migration");
+    await assertMigration(dir, {
+      connections: { github: { repo: "user/repo" } },
+      snapshotLocal: { "note.md": "base" },
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("migration does not restart daemon after stash stop", async () => {
+  const dir = await makeTempDir("stash-cli-migrate-stop");
+
+  try {
+    await writeLegacyLayout(dir, {
+      connections: { github: { repo: "user/repo" } },
+    });
+
+    const result = await runMain(dir, ["stop"], {
+      config: {
+        providers: {},
+        background: { stashes: [resolve(dir)] },
+      },
+      serviceStatus: { installed: true, running: true },
+    });
+
+    assert.equal(result.calls.uninstall >= 1, true, "daemon should be stopped");
+    assert.equal(result.calls.install, 0, "daemon should not be restarted after stop command");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("status prints background sync line above provider connections with a blank line gap", async () => {
+  const dir = await makeTempDir("stash-cli-status-layout");
+
+  try {
+    await Stash.init(dir, { providers: {}, background: { stashes: [resolve(dir)] } });
+    await writeFile(
+      join(dir, ".stash", "config.json"),
+      JSON.stringify(
+        {
+          connections: {
+            github: { repo: "user/repo" },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    await writeFile(join(dir, ".stash", "snapshot.json"), JSON.stringify({}, null, 2), "utf8");
+
+    const result = await runMain(dir, ["status"], {
+      config: {
+        providers: {},
+        background: { stashes: [resolve(dir)] },
+      },
+      serviceStatus: { installed: true, running: true },
+    });
+
+    const lines = result.stdout.split("\n");
+    const bgLine = lines.findIndex((line) => line.includes("Background sync is on"));
+    const providerLine = lines.findIndex((line) => line.includes("github"));
+    assert.notEqual(bgLine, -1, "should contain background sync line");
+    assert.notEqual(providerLine, -1, "should contain provider line");
+    assert.equal(
+      bgLine < providerLine,
+      true,
+      "background sync line should appear before provider line",
+    );
+    assert.equal(
+      lines[bgLine + 1]?.trim(),
+      "",
+      "blank line should follow the background sync line",
     );
   } finally {
     await rm(dir, { recursive: true, force: true });

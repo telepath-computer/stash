@@ -16,6 +16,7 @@ import {
 import type { LocalConfig } from "./local-config.ts";
 import { readLocalConfig, writeLocalConfig } from "./local-config.ts";
 import { runDaemon } from "./daemon.ts";
+import { needsMigration } from "./migrations.ts";
 import { providers } from "./providers/index.ts";
 import { Stash } from "./stash.ts";
 import { createColors } from "./ui/color.ts";
@@ -89,6 +90,26 @@ function writeLine(stream: NodeJS.WriteStream, text: string): void {
 
 function isUnsupportedPlatformError(error: unknown): boolean {
   return error instanceof UnsupportedPlatformError;
+}
+
+async function bounceDaemonIfMigrationNeeded(
+  dir: string,
+  getService: () => Promise<ServiceHandle>,
+): Promise<boolean> {
+  if (!isStashDirectory(dir) || !needsMigration(dir)) {
+    return false;
+  }
+  try {
+    const service = await getService();
+    const status = await service.status();
+    if (!status.running) {
+      return false;
+    }
+    await service.uninstall();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function resolveServiceLaunch(argv = process.argv): Promise<ServiceLaunch> {
@@ -238,10 +259,16 @@ async function runConnect(
   try {
     const status = await (await deps.getService()).status();
     if (status.running) {
-      writeLine(stdout, `${green("Background sync is on")} ${dim("·")} ${dim("This stash is now syncing automatically")}`);
+      writeLine(
+        stdout,
+        `${green("Background sync is on")} ${dim("·")} ${dim("This stash is now syncing automatically")}`,
+      );
     }
   } catch (error) {
-    if (error instanceof Error && error.message === "Could not resolve a command to run `stash daemon`") {
+    if (
+      error instanceof Error &&
+      error.message === "Could not resolve a command to run `stash daemon`"
+    ) {
       return;
     }
     if (!isUnsupportedPlatformError(error)) {
@@ -342,17 +369,26 @@ async function runStatusAll(
   const stashes = getBackgroundStashes(globalConfig);
 
   if (stashes.length === 0) {
-    writeLine(stdout, "No stashes connected yet — run `stash connect <provider>` in a directory to add one");
+    writeLine(
+      stdout,
+      "No stashes connected yet — run `stash connect <provider>` in a directory to add one",
+    );
     return;
   }
 
   try {
     const current = await serviceHandle.status();
     if (current.running) {
-      writeLine(stdout, `${green("Background sync is on")} ${dim("·")} ${dim(`watching ${formatStashCount(stashes.length)}`)}`);
+      writeLine(
+        stdout,
+        `${green("Background sync is on")} ${dim("·")} ${dim(`watching ${formatStashCount(stashes.length)}`)}`,
+      );
     } else {
       writeLine(stdout, red("Background sync is off"));
-      writeLine(stdout, dim(`Run \`stash start\` to resume syncing ${formatStashCount(stashes.length)}`));
+      writeLine(
+        stdout,
+        dim(`Run \`stash start\` to resume syncing ${formatStashCount(stashes.length)}`),
+      );
     }
   } catch (error) {
     if (isUnsupportedPlatformError(error)) {
@@ -391,7 +427,10 @@ async function runStatusAll(
       for (const providerName of connectionNames) {
         const conn = stash.connections[providerName];
         const label = conn.repo ?? Object.values(conn).join(", ");
-        writeLine(stdout, `  ${providerName}  ${label} ${dim("·")} ${red(persistedStatus.error ?? "unknown error")}`);
+        writeLine(
+          stdout,
+          `  ${providerName}  ${label} ${dim("·")} ${red(persistedStatus.error ?? "unknown error")}`,
+        );
       }
       continue;
     }
@@ -403,7 +442,10 @@ async function runStatusAll(
       const conn = stash.connections[providerName];
       const label = conn.repo ?? Object.values(conn).join(", ");
       if (persistedStatus === null || localStatus.lastSync === null) {
-        writeLine(stdout, `  ${providerName}  ${label} ${dim("·")} ${dim("Waiting for first sync")}`);
+        writeLine(
+          stdout,
+          `  ${providerName}  ${label} ${dim("·")} ${dim("Waiting for first sync")}`,
+        );
         continue;
       }
 
@@ -444,6 +486,30 @@ async function runStatus(
     return;
   }
 
+  if (getBackgroundStashes(globalConfig).includes(resolve(dir))) {
+    try {
+      const current = await serviceHandle.status();
+      if (current.running) {
+        writeLine(
+          stdout,
+          `${green("Background sync is on")} ${dim("·")} ${dim("Use `stash status --all` to view all stashes")}`,
+        );
+      } else {
+        writeLine(
+          stdout,
+          `${red("Background sync is off")} ${dim("·")} ${dim("Run `stash start` to keep connected stashes in sync")}`,
+        );
+      }
+    } catch (error) {
+      if (isUnsupportedPlatformError(error)) {
+        writeLine(stdout, `${red("Background sync is not supported on this platform")}`);
+      } else {
+        throw error;
+      }
+    }
+    writeLine(stdout, "");
+  }
+
   const status = stash.status();
   const parts = formatChangeParts(status);
 
@@ -456,7 +522,10 @@ async function runStatus(
     if (status.lastSync) {
       const ago = formatTimeAgo(status.lastSync);
       if (parts.length > 0) {
-        writeLine(stdout, `  Local changes: ${parts.join(", ")} ${dim("·")} ${dim(`synced ${ago}`)}`);
+        writeLine(
+          stdout,
+          `  Local changes: ${parts.join(", ")} ${dim("·")} ${dim(`synced ${ago}`)}`,
+        );
       } else {
         writeLine(stdout, dim(`  Up to date · synced ${ago}`));
       }
@@ -465,25 +534,6 @@ async function runStatus(
     } else {
       writeLine(stdout, dim("  Never synced"));
     }
-  }
-
-  if (!getBackgroundStashes(globalConfig).includes(resolve(dir))) {
-    return;
-  }
-
-  try {
-    const current = await serviceHandle.status();
-    if (current.running) {
-      writeLine(stdout, `  ${green("Background sync is on")} ${dim("·")} ${dim("Use `stash status --all` to view all stashes")}`);
-    } else {
-      writeLine(stdout, `  ${red("Background sync is off")} ${dim("·")} ${dim("Run `stash start` to keep connected stashes in sync")}`);
-    }
-  } catch (error) {
-    if (isUnsupportedPlatformError(error)) {
-      writeLine(stdout, `  ${red("Background sync is not supported on this platform")}`);
-      return;
-    }
-    throw error;
   }
 }
 
@@ -610,6 +660,21 @@ export async function main(argv = process.argv, deps: CliDependencies = {}): Pro
   const stdout = deps.stdout ?? process.stdout;
   const stderr = deps.stderr ?? process.stderr;
 
+  const dirsToCheck = [cwd()];
+  try {
+    const config = await readConfig();
+    dirsToCheck.push(...getBackgroundStashes(config));
+  } catch {
+    // Global config unreadable — skip migration check.
+  }
+  let daemonBounced = false;
+  for (const dir of dirsToCheck) {
+    if (await bounceDaemonIfMigrationNeeded(dir, getService)) {
+      daemonBounced = true;
+      break;
+    }
+  }
+
   const program = new Command()
     .name("stash")
     .description("Conflict-free synced folders")
@@ -734,4 +799,13 @@ export async function main(argv = process.argv, deps: CliDependencies = {}): Pro
   }
 
   await program.parseAsync(argv);
+
+  const skipRestart = commandName === "stop" || commandName === "daemon";
+  if (daemonBounced && !skipRestart) {
+    try {
+      await (await getService()).install();
+    } catch {
+      // Best-effort restart — service may be unsupported or unavailable.
+    }
+  }
 }
