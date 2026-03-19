@@ -1,4 +1,4 @@
-<img src="docs/assets/stash-logo.png" alt="Stash" height="64" />
+<img src="docs/assets/stash-logo.png" alt="Stash" width="250" />
 
 [![npm](https://img.shields.io/npm/v/@telepath-computer/stash)](https://www.npmjs.com/package/@telepath-computer/stash)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
