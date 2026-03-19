@@ -5,6 +5,8 @@
 
 **Conflict-free synced folders.** Multiple people, agents, and machines can edit the same directory, then converge with a single `stash sync`.
 
+[Read the launch post →](https://telepath.computer/blog/stash/)
+
 ![Stash demo](docs/assets/stash-demo.gif)
 
 ## Quick Start
