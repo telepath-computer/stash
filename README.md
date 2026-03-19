@@ -1,76 +1,87 @@
 # Stash
 
+[![npm](https://img.shields.io/npm/v/@telepath-computer/stash)](https://www.npmjs.com/package/@telepath-computer/stash)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 Conflict-free synced folders. Multiple people, agents, and machines can edit the same directory, then converge with a single `stash sync`.
+
+![Stash demo](docs/assets/stash-demo.gif)
 
 ## Quick Start
 
 ```bash
 npm install -g @telepath-computer/stash
-cd dir-to-sync/ && stash connect <provider>
+cd dir-to-sync/ && stash connect github
 stash start
 ```
 
+> [!TIP]
+> Run `stash start` once and forget about it — stash will keep your directories in sync in the background, even across restarts.
+
 ## Using the GitHub provider
 
-Right now, the only sync endpoint for Stash is a GitHub repo. To get this running, you'll need a GitHub personal access token. We recommend a **fine-grained token** scoped to only the repos you use with stash.
+The only sync endpoint right now is a GitHub repo. You'll need a personal access token — we recommend a **fine-grained token** scoped to only the repos you use with stash.
 
-[Create a new repo on GitHub](https://github.com/new) to use for sync.
-
-Set up GitHub access and connect the current directory, following the prompts to enter your repo and token (you'll only need to enter the token once):
+[Create a new repo on GitHub](https://github.com/new) to use for sync, then connect it:
 
 ```bash
 cd dir-to-sync/
 stash connect github
 ```
 
-Then you can choose how you want to sync it:
+Stash will prompt for your repo and token (you'll only need to enter the token once). Then choose how to sync:
 
 ```bash
-stash sync # Sync once
-stash watch # Watch this stash & sync continuously in the foreground
-stash start # Sync all stashes in the background (resumes on restart)
+stash sync          # Sync once
+stash watch         # Watch and sync continuously in the foreground
+stash start         # Sync all stashes in the background, resumes on restart
 ```
 
-### Creating a GitHub Token
+### Creating a GitHub token
 
 1. Go to [github.com/settings/personal-access-tokens/new](https://github.com/settings/personal-access-tokens/new)
 2. Give it a name (e.g. `stash`)
-3. Under **Repository access**, either allow all repos, or choose **Only select repositories** and pick the repo(s) you want to use for stash
+3. Under **Repository access**, select the repo(s) you want to use with stash
 4. Under **Repository permissions**, set **Contents** to **Read and write**
 5. Click **Generate token** and copy it
 
-Use this token when running `stash setup github`.
+Use this token when running `stash setup github`. A classic token with the `repo` scope also works.
 
-A classic token with the `repo` scope also works.
+## How it works
 
-## How It Works
+- **One operation.** `stash sync` pushes local changes, pulls remote changes, and merges concurrent edits in a single pass.
+- **Smart text merging.** Different-region edits combine cleanly. Overlapping edits preserve both sides instead of silently dropping content.
+- **Binary files** use last-modified-wins.
+- **Automatic tracking.** Every file in the directory is synced except dotfiles, dot-directories, symlinks, and local-only `.stash/` metadata.
 
-- `stash sync` pushes local changes, pulls remote changes, and merges concurrent edits in one operation.
-- Text files are merged automatically. Different-region edits combine cleanly; overlapping edits preserve both sides instead of silently dropping content.
-- Binary files use last-modified-wins.
-- All files in the stash directory are tracked automatically except dotfiles, dot-directories, symlinks, and local-only `.stash/` metadata.
+## Commands
 
-## All commands
+| Command | Description |
+|---|---|
+| `stash connect <provider>` | Initialize a stash and connect a provider |
+| `stash disconnect` | Disconnect from providers and stop syncing |
+| `stash sync` | Sync once |
+| `stash watch` | Watch and sync continuously in the foreground |
+| `stash start` | Start background sync (resumes on restart) |
+| `stash stop` | Stop and uninstall the background service |
+| `stash status` | Show status of the current stash |
+| `stash status --all` | Show status of all stashes |
+| `stash setup <provider>` | Update provider credentials |
+| `stash config set <key> <value>` | Set a per-stash config value |
+| `stash config get <key>` | Get a per-stash config value |
+
+## Using stash with git
+
+> [!WARNING]
+> By default, stash refuses to sync a directory that contains `.git/`. Branch switches look like mass file edits to stash and can push destructive changes to the remote.
+
+If you don't need git in that directory, remove `.git/`. If you intentionally want both, run:
 
 ```bash
-stash connect <provider> <options> # Initializes a stash with a provider
-stash start # Starts the background process, and resumes on startup
-stash stop # Stops & uninstalls the background process
-stash sync # Syncs the directory once
-stash watch # Keeps directory in sync continously, in the foreground
-stash setup <provider> # Modifies the provider setup (e.g. auth token)
-stash status # Prints the status of the stash you are in
-stash status --all # Prints the status of all stashes
-stash disconnect # Disconnects the stash from providers, stops syncing
-stash config set <key> <value> # Set a per-stash config value (e.g. allow-git)
-stash config get <key> # Get a per-stash config value
+stash config set allow-git true
 ```
 
-## Using Stash With Git
-
-By default, stash refuses to sync a directory that contains `.git/`. Branch switches look like mass file edits to stash, so syncing inside a git working tree can push destructive changes to the remote.
-
-If you do not need git in that directory, remove `.git/`. If you intentionally want both, run `stash config set allow-git true` first, then keep stash pinned to one branch and do not switch branches while stash is active. Behaviour in that configuration is undefined — make a backup.
+Keep stash pinned to one branch and don't switch branches while it's active. Behaviour in that configuration is undefined — make a backup.
 
 ## FAQ
 
@@ -84,4 +95,4 @@ Yes, but not on the same machine and directory. Stash syncs the working tree dir
 
 **Does stash use branches or PRs?**
 
-No. Stash reads and writes the `main` branch directly.
+No. Stash reads and writes `main` directly.
