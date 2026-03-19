@@ -1,9 +1,9 @@
-# Stash
+<img src="docs/assets/stash-logo.png" alt="Stash" height="64" />
 
 [![npm](https://img.shields.io/npm/v/@telepath-computer/stash)](https://www.npmjs.com/package/@telepath-computer/stash)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-Conflict-free synced folders. Multiple people, agents, and machines can edit the same directory, then converge with a single `stash sync`.
+**Conflict-free synced folders.** Multiple people, agents, and machines can edit the same directory, then converge with a single `stash sync`.
 
 ![Stash demo](docs/assets/stash-demo.gif)
 
