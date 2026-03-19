@@ -33,7 +33,7 @@
     "type": "git",
     "url": "git+https://github.com/telepath-computer/stash.git"
   },
-  "license": "ISC",
+  "license": "MIT",
   "dependencies": {
     "@inquirer/prompts": "^8.3.0",
     "@parcel/watcher": "^2.5.6",
