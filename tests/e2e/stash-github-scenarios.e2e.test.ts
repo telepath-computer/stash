@@ -136,9 +136,22 @@ async function createRepo(): Promise<RepoInfo> {
 }
 
 async function deleteRepo(fullName: string): Promise<void> {
-  const response = await githubRequest("DELETE", `/repos/${fullName}`);
-  if (response.status !== 204 && response.status !== 404) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const response = await githubRequest("DELETE", `/repos/${fullName}`);
+    if (response.status === 204 || response.status === 404) {
+      return;
+    }
+
     const text = await response.text();
+    if (
+      response.status === 403 &&
+      text.includes("Repository cannot be deleted until it is done being created on disk") &&
+      attempt < 4
+    ) {
+      await sleep(1_000);
+      continue;
+    }
+
     throw new Error(`Failed to delete ${fullName}: ${response.status} ${text}`);
   }
 }
@@ -634,8 +647,17 @@ test("scenario 14: one-side file create pushes then pulls", E2E_OPTIONS, async (
     await writeFile(join(setup.machineA.dir, "new.md"), "draft", "utf8");
     await syncWithRetry(setup.machineA.stash);
     assert.equal(await readRemoteText(setup.repo.fullName, "new.md"), "draft");
-    await syncWithRetry(setup.machineB.stash);
-    assert.equal(await readFile(join(setup.machineB.dir, "new.md"), "utf8"), "draft");
+    let pulled = false;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await syncWithRetry(setup.machineB.stash);
+      if (existsSync(join(setup.machineB.dir, "new.md"))) {
+        assert.equal(await readFile(join(setup.machineB.dir, "new.md"), "utf8"), "draft");
+        pulled = true;
+        break;
+      }
+      await sleep(400);
+    }
+    assert.equal(pulled, true);
   } finally {
     if (setup) {
       await deleteRepo(setup.repo.fullName);

@@ -109,9 +109,22 @@ async function createRepo(): Promise<RepoInfo> {
 }
 
 async function deleteRepo(fullName: string): Promise<void> {
-  const res = await githubRequest("DELETE", `/repos/${fullName}`);
-  if (res.status !== 204 && res.status !== 404) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const res = await githubRequest("DELETE", `/repos/${fullName}`);
+    if (res.status === 204 || res.status === 404) {
+      return;
+    }
+
     const text = await res.text();
+    if (
+      res.status === 403 &&
+      text.includes("Repository cannot be deleted until it is done being created on disk") &&
+      attempt < 4
+    ) {
+      await sleep(1_000);
+      continue;
+    }
+
     throw new Error(`Failed to delete repo ${fullName}: ${res.status} ${text}`);
   }
 }
