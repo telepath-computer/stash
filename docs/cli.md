@@ -4,16 +4,6 @@ The CLI is the user-facing layer for provider setup, sync orchestration, and ter
 
 ## Commands
 
-### `stash init`
-
-Initializes the current directory as a stash.
-
-- creates `.stash/`
-- preserves existing files
-- is idempotent
-
-If the directory is already initialized, the command succeeds and reports that it was already initialized.
-
 ### `stash setup <provider>`
 
 Writes global provider configuration.
@@ -28,22 +18,67 @@ If required fields are not provided on the command line, the CLI prompts for the
 
 ### `stash connect <provider>`
 
-Initializes the current directory as a stash if needed, then writes per-directory provider connection config.
+Initializes the current directory as a stash if needed, writes per-directory provider connection config, and registers the stash for background sync.
 
 Example:
 
 ```bash
 stash connect github --repo user/repo
-stash connect github --repo user/repo --background
 ```
 
 If global setup fields are missing, `connect` collects and writes them before storing connection fields.
 
-If `--background` is supplied, the CLI also registers the current stash in the global background registry after connecting.
+Example output:
+
+```text
+Connected github.
+```
+
+If background sync is already running:
+
+```text
+Connected github.
+Background sync is on · This stash is now syncing automatically
+```
+
+### `stash disconnect`
+
+Disconnects the current stash completely.
+
+The CLI removes all provider connections, unregisters the stash from background sync, and removes `.stash/`.
 
 ### `stash disconnect <provider>`
 
-Removes the provider connection from `.stash/config.local.json`.
+Removes one provider connection from `.stash/config.local.json`.
+
+If that was the last remaining provider connection, the CLI also removes the stash from the global background registry and deletes `.stash/`.
+
+### `stash start`
+
+Installs and starts the OS-managed background sync service:
+
+- macOS uses a user `launchd` agent
+- Linux uses a user `systemd` unit
+- the installed service runs the hidden `stash daemon` entrypoint
+- other platforms report that background sync is not supported
+
+Example output:
+
+```text
+Background sync is on
+Watching 3 stashes · starts on startup
+```
+
+### `stash stop`
+
+Stops and uninstalls the OS-managed background sync service for the current user.
+
+Example output:
+
+```text
+Background sync is off
+Run `stash start` to resume syncing 3 stashes
+```
 
 ### `stash sync`
 
@@ -52,34 +87,34 @@ Runs one sync cycle.
 TTY output uses a live status line:
 
 ```text
-◐ checking...
-◐ syncing... ↑ hello.md
-◐ syncing... ↓ photo.jpg
+◐ Checking...
+◐ Syncing... ↑ hello.md
+◐ Syncing... ↓ photo.jpg
 ✓ synced (1↑ 1↓)
 ```
 
 If there are no changes:
 
 ```text
-◐ checking...
+◐ Checking...
 ✓ up to date
 ```
 
 If sync fails:
 
 ```text
-✗ sync failed: network error
+✗ Sync failed: network error
 ```
 
 ### `stash watch`
 
-Continuously syncs until interrupted.
+Continuously syncs the current stash until interrupted.
 
 Behavior:
 
 - starts with an immediate sync
 - debounces filesystem-triggered syncs by 1 second
-- polls every 30 seconds to pick up remote-only changes
+- polls every 10 seconds to pick up remote-only changes
 - resets the poll timer after each completed sync
 - `.` triggers an immediate sync
 - `q` and `Ctrl-C` stop the watcher
@@ -95,53 +130,49 @@ Additional behavior worth preserving:
 If no provider is connected, watch exits with:
 
 ```text
-no connection configured — run `stash connect <provider>` first
+No connection configured — run `stash connect <provider>` first
 ```
 
 ### `stash status`
 
-Prints configured connections plus local `added`, `modified`, `deleted`, and `lastSync` status based on disk versus `snapshot.json`.
+Prints local status for the current stash.
 
-### `stash background install`
+It shows configured connections plus local `added`, `modified`, `deleted`, and `lastSync` status based on disk versus `snapshot.json`.
 
-Installs the OS-managed background service:
+If the current stash is registered for background sync, the CLI also prints a short hint toward `stash status --all`.
 
-- macOS uses a user `launchd` agent
-- Linux uses a user `systemd` unit
-- the installed service runs `stash background watch`
-- other platforms fail with `not supported on this platform yet`
+If run outside a stash directory:
 
-The CLI resolves the absolute `stash` binary path during install and writes it into the generated service file.
+```text
+Not in a stash directory — run `stash status --all` to view all stashes
+```
 
-### `stash background uninstall`
+### `stash status --all`
 
-Stops and removes the OS-managed background service for the current user.
+Prints global background sync status plus all registered stashes.
 
-### `stash background add [dir]`
+It shows:
 
-Registers a stash for background syncing.
+- whether background sync is running
+- each registered stash basename and path
+- the configured provider label for each stash
+- local pending changes and last sync time, or the current background error
 
-- `[dir]` defaults to the current directory
-- the stored path is absolute
-- the stash stays registered until explicitly removed
-- if no provider is connected yet, the command warns but still registers the stash
-- if the service is not installed, the command warns but still registers the stash
+Example output:
 
-### `stash background remove [dir]`
+```text
+Background sync is on · watching 2 stashes
 
-Unregisters a stash from background syncing.
+● notes
+  /Users/me/notes
+  github  user/notes · Up to date · synced 2m ago
 
-### `stash background status`
+● work
+  /Users/me/work
+  github  user/work · Local changes: 1 added, 2 modified · synced 5m ago
+```
 
-Prints:
-
-- OS service state
-- each registered stash path
-- the most recent `.stash/status.json` summary for each stash
-
-On unsupported platforms it reports `service status: unsupported platform` but still lists registered stashes.
-
-### `stash background watch`
+### Hidden: `stash daemon`
 
 Hidden daemon entrypoint used by the OS service.
 
@@ -168,6 +199,23 @@ Global config shape:
 }
 ```
 
+## UI Style
+
+The CLI output intentionally uses a compact, app-like style:
+
+- primary state lines use sentence case, for example `Background sync is on`
+- secondary context lines are short and actionable, for example `Run \`stash start\` to resume syncing 3 stashes`
+- transient spinner/live lines also use sentence case, for example `Checking...` and `Syncing...`
+- local and global status phrases are capitalized consistently: `Up to date`, `Local changes`, `Waiting for first sync`, `Directory not found`
+- counts should pluralize naturally, for example `Watching 1 stash` and `Watching 3 stashes`
+- color is part of the UI contract in TTY mode:
+  - success/current healthy state uses green
+  - warnings or changed local state use yellow where applicable
+  - failures and unsupported platform messages use red
+  - secondary detail uses dim text
+
+These presentation details are intentional behavior, not incidental formatting.
+
 ## Scope
 
 The CLI owns:
@@ -177,6 +225,6 @@ The CLI owns:
 - output rendering
 - watch orchestration
 - global config file I/O
-- background service install/status commands
+- background service lifecycle commands
 
 The CLI does not own sync logic or reconciliation rules; those live in `Stash`.

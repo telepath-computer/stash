@@ -51,6 +51,8 @@ export class GitHubProvider implements Provider {
   private readonly name: string;
   private headSha: string | undefined;
   private baseTreeSha: string | undefined;
+  private static readonly RAW_FETCH_RETRY_MS = 300;
+  private static readonly RAW_FETCH_RETRY_ATTEMPTS = 5;
 
   constructor(config: GitHubConfig) {
     if (!config.token) {
@@ -488,14 +490,24 @@ export class GitHubProvider implements Provider {
   }
 
   private async fetchRawBytes(path: string): Promise<Buffer> {
-    const response = await this.rest(
-      "GET",
-      this.repoPath(`/contents/${encodePath(path)}?ref=main`),
-      undefined,
-      { Accept: "application/vnd.github.raw+json" },
-    );
-    await this.ensureOk(response, `Failed to fetch raw content for ${path}`);
-    return Buffer.from(await response.arrayBuffer());
+    for (let attempt = 1; attempt <= GitHubProvider.RAW_FETCH_RETRY_ATTEMPTS; attempt += 1) {
+      const response = await this.rest(
+        "GET",
+        this.repoPath(`/contents/${encodePath(path)}?ref=main`),
+        undefined,
+        { Accept: "application/vnd.github.raw+json" },
+      );
+      if (response.ok) {
+        return Buffer.from(await response.arrayBuffer());
+      }
+      if (response.status === 404 && attempt < GitHubProvider.RAW_FETCH_RETRY_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, GitHubProvider.RAW_FETCH_RETRY_MS));
+        continue;
+      }
+      this.ensureOk(response, `Failed to fetch raw content for ${path}`);
+    }
+
+    throw new Error(`Failed to fetch raw content for ${path}`);
   }
 
   private async createBlob(content: Buffer, errorMessage: string): Promise<string> {

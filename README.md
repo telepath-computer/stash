@@ -11,13 +11,10 @@ npm install -g @telepath-computer/stash
 Set up GitHub access and connect the current directory:
 
 ```bash
-stash background install
-stash init
 stash setup github
-stash connect github --repo user/repo --background
+stash connect github --repo user/repo
+stash start
 ```
-
-You can initialize a directory explicitly with `stash init`, or let `stash connect` create `.stash/` for you automatically.
 
 You'll need a GitHub personal access token. We recommend a **fine-grained token** scoped to only the repos you use with stash.
 
@@ -43,23 +40,30 @@ Use this token when running `stash setup github`.
 ## Commands
 
 ```bash
-stash background install
-stash background add
-stash init
 stash setup github
-stash connect github --repo user/repo --background
+stash connect github --repo user/repo
+stash start
+stash stop
 stash sync
 stash watch
-stash background status
 stash status
+stash status --all
+stash disconnect
 stash disconnect github
-stash background remove
-stash background uninstall
 ```
 
 `stash watch` keeps the directory in sync continuously. Press `.` to trigger an immediate sync and `q` to quit.
 
-`stash background install` plus `stash connect --background` gives you boot-time background syncing managed by `launchd` on macOS or `systemd` on Linux.
+`stash start` enables boot-time background syncing managed by `launchd` on macOS or `systemd` on Linux. Connected stashes are registered automatically.
+
+`stash disconnect` removes the current stash completely. `stash disconnect <provider>` removes one provider connection and removes `.stash/` too if that was the last one.
+
+Typical `stash start` output:
+
+```text
+Background sync is on
+Watching 1 stash · starts on startup
+```
 
 ## Config
 

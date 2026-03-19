@@ -2,7 +2,7 @@
 
 Stash has five main pieces:
 
-- `src/cli.ts` and `src/cli-main.ts` handle command-line behavior, prompting, global config updates, and OS service commands.
+- `src/cli.ts` and `src/cli-main.ts` handle command-line behavior, prompting, global config updates, local/global status output, and OS service commands.
 - `src/watch.ts` owns the reusable watch loop for polling, filesystem events, debounce, and sync scheduling.
 - `src/daemon.ts` manages one headless `Watch` instance per registered stash and persists background status/log files.
 - `src/stash.ts` owns file scanning, reconciliation, snapshots, local metadata, and the sync lifecycle.
@@ -52,7 +52,7 @@ Local metadata lives in `.stash/` inside the synced directory:
 
 - `config.local.json` stores per-directory provider connection settings.
 - `snapshot.json` stores the last synchronized hash state and is the only `.stash/` file pushed to the remote.
-- `status.json` stores the latest background watch result for `stash background status`.
+- `status.json` stores the latest background daemon result for `stash status --all`.
 - `sync.log` stores capped per-stash background sync logs.
 - `sync.lock` is local-only and exists only while a sync is active.
 - `snapshot.local/` stores text merge bases for later three-way merges.
