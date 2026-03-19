@@ -12,6 +12,8 @@ Pushing to `main` triggers the publish workflow (`.github/workflows/publish.yml`
 
 In practice: bump the version manually before pushing if you want a minor or major release; otherwise CI will cut a patch release automatically.
 
+For commits that should not trigger a publish at all (license, docs, CI config, metadata), add `[skip ci]` to the commit message.
+
 **Important:** CI compares the top commit to the one immediately before it (`HEAD~1`). If the version bump commit is not the last commit pushed — for example, because other commits were added on top of it before pushing — CI will see the same version in both `HEAD` and `HEAD~1` and auto-bump. To avoid an unintended patch bump, **make sure the version bump commit is the last commit on the branch before pushing to main.**
 
 ## Release checklist
