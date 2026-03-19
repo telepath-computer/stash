@@ -223,15 +223,20 @@ test(
       await writeFile(join(machineB, "hello.md"), "line1\nline2\nLINE3", "utf8");
       await syncWithRetry(stashB);
       let mergedB = await readFile(join(machineB, "hello.md"), "utf8");
-      if (mergedB !== "LINE1\nline2\nLINE3") {
-        await sleep(300);
+      for (let attempt = 0; attempt < 4 && mergedB !== "LINE1\nline2\nLINE3"; attempt += 1) {
+        await sleep(400);
+        await syncWithRetry(stashA);
         await syncWithRetry(stashB);
         mergedB = await readFile(join(machineB, "hello.md"), "utf8");
       }
       assert.equal(mergedB, "LINE1\nline2\nLINE3");
 
-      await syncWithRetry(stashA);
-      const mergedA = await readFile(join(machineA, "hello.md"), "utf8");
+      let mergedA = await readFile(join(machineA, "hello.md"), "utf8");
+      for (let attempt = 0; attempt < 4 && mergedA !== "LINE1\nline2\nLINE3"; attempt += 1) {
+        await sleep(400);
+        await syncWithRetry(stashA);
+        mergedA = await readFile(join(machineA, "hello.md"), "utf8");
+      }
       assert.equal(mergedA, "LINE1\nline2\nLINE3");
     } finally {
       if (repo) {

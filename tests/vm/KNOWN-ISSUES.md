@@ -4,7 +4,7 @@
 
 **Status:** Reproduced on Ubuntu 24.04 VM with nvm + Node 22.
 
-**Symptom:** `stash background install` succeeds but the service crash-loops with exit code 127:
+**Symptom:** `stash start` succeeds but the service crash-loops with exit code 127:
 
 ```
 /usr/bin/env: 'node': No such file or directory
@@ -25,7 +25,7 @@ Description=Stash background sync
 
 [Service]
 Type=simple
-ExecStart=/root/.nvm/versions/node/v22.22.1/bin/stash background watch
+ExecStart=/root/.nvm/versions/node/v22.22.1/bin/stash daemon
 Restart=always
 RestartSec=5
 

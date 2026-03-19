@@ -92,7 +92,7 @@ Loads an existing stash rooted at `dir`.
 - Requires `.stash/` to already exist.
 - Throws if the directory is not already a stash.
 - Uses the provided `globalConfig` plus local `.stash/config.local.json`.
-- The current error guidance points callers toward `stash init` or `stash connect <provider>`.
+- The current error guidance points callers toward `stash connect <provider>`.
 
 ### `Stash.init()`
 
