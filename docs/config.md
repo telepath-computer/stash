@@ -76,7 +76,7 @@ Local metadata inside `.stash/`:
 - `config.json` stores per-stash user-facing config
 - `snapshot.json` stores the last synchronized hash state and is the only `.stash/` file pushed to the remote
 - `snapshot/` stores text merge bases for future three-way merges
-- `status.json` stores the latest background watch result
+- `status.json` stores the latest background daemon result
 - `sync.log` stores capped per-stash background sync logs
 - `sync.lock` exists only while a sync is active
 

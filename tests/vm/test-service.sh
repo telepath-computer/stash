@@ -14,7 +14,7 @@ XDG_DIR="$(mktemp -d /tmp/stash-xdg-XXXX)"
 EXIT_CODE=0
 
 cleanup() {
-  XDG_CONFIG_HOME="$XDG_DIR" stash background uninstall 2>/dev/null || true
+  XDG_CONFIG_HOME="$XDG_DIR" stash stop 2>/dev/null || true
   rm -rf "$WORKDIR" "$XDG_DIR"
 }
 trap cleanup EXIT
@@ -57,14 +57,14 @@ cat > "$XDG_DIR/stash/config.json" <<CONF
 }
 CONF
 
-echo "--- Installing service ---"
-stash background install 2>&1 || { echo "FAIL: install failed"; EXIT_CODE=1; }
+echo "--- Starting background sync ---"
+stash start 2>&1 || { echo "FAIL: start failed"; EXIT_CODE=1; }
 
 echo "--- Waiting for service to start ---"
 sleep 3
 
 echo "--- Checking service status ---"
-stash background status 2>&1 || true
+stash status --all 2>&1 || true
 
 # Check systemd directly
 if command -v systemctl &>/dev/null; then
@@ -78,8 +78,8 @@ if command -v systemctl &>/dev/null; then
   cat ~/.config/systemd/user/stash-background.service 2>&1 || true
 fi
 
-echo "--- Uninstalling service ---"
-stash background uninstall 2>&1
+echo "--- Stopping background sync ---"
+stash stop 2>&1
 
 echo "--- Service lifecycle test complete (exit=$EXIT_CODE) ---"
 exit $EXIT_CODE

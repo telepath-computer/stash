@@ -86,9 +86,7 @@ export class Stash extends Emitter<StashEvents> {
   ): Promise<Stash> {
     const stashDir = join(dir, ".stash");
     if (!existsSync(stashDir)) {
-      throw new Error(
-        "This directory is not a stash. Run `stash init` or `stash connect <provider>` first.",
-      );
+      throw new Error("This directory is not a stash. Run `stash connect <provider>` first.");
     }
 
     await ensureMigration(dir);

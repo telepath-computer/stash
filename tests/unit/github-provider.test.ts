@@ -706,6 +706,33 @@ test("GitHubProvider errors: REST failures use concise status text", async () =>
   }
 });
 
+test("GitHubProvider.get retries transient 404s for newly visible blobs", async () => {
+  let calls = 0;
+  const api = new MockGitHubAPI();
+  const cleanup = api
+    .onRequest("GET", "/repos/user/repo/contents/file.bin?ref=main", () => {
+      calls += 1;
+      if (calls < 3) {
+        return { status: 404, body: { message: "Not Found" } };
+      }
+      return { status: 200, body: Buffer.from([1, 2, 3]) };
+    })
+    .install();
+
+  try {
+    const provider = makeProvider();
+    const stream = await provider.get("file.bin");
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    assert.deepEqual(Buffer.concat(chunks), Buffer.from([1, 2, 3]));
+    assert.equal(calls, 3);
+  } finally {
+    cleanup();
+  }
+});
+
 test("GitHubProvider errors: GraphQL failures use concise status text", async () => {
   const remoteSnapshot = {
     "hello.md": { hash: "sha256-new" },

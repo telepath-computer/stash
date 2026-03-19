@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { access, constants, readFile } from "node:fs/promises";
+import { access, constants, readFile, rm } from "node:fs/promises";
 import { basename, delimiter, join, resolve } from "node:path";
 import { Daemon, UnsupportedPlatformError } from "@rupertsworld/daemon";
 import { Command, Option } from "commander";
@@ -34,6 +34,11 @@ type ServiceHandle = {
   status(): Promise<{ installed: boolean; running: boolean }>;
 };
 
+type ServiceLaunch = {
+  command: string;
+  args: string[];
+};
+
 type CliDependencies = {
   cwd?: () => string;
   readGlobalConfig?: () => Promise<GlobalConfig>;
@@ -55,6 +60,10 @@ const STASH_CONFIG_KEYS = new Set(["allow-git"]);
 
 function isStashConfigKey(key: string): key is "allow-git" {
   return STASH_CONFIG_KEYS.has(key);
+}
+
+function isStashDirectory(dir: string): boolean {
+  return existsSync(join(dir, ".stash"));
 }
 
 function getProvider(name: string): ProviderClass {
@@ -82,12 +91,15 @@ function isUnsupportedPlatformError(error: unknown): boolean {
   return error instanceof UnsupportedPlatformError;
 }
 
-export async function resolveStashCommand(): Promise<string> {
-  const argvPath = process.argv[1];
-  if (argvPath && basename(argvPath) === "stash") {
-    const candidate = resolve(argvPath);
+export async function resolveServiceLaunch(argv = process.argv): Promise<ServiceLaunch> {
+  const invokedPath = argv[1];
+  if (invokedPath) {
+    const candidate = resolve(invokedPath);
     if (await isExecutable(candidate)) {
-      return candidate;
+      return { command: candidate, args: ["daemon"] };
+    }
+    if (existsSync(candidate)) {
+      return { command: process.execPath, args: [candidate, "daemon"] };
     }
   }
 
@@ -97,11 +109,11 @@ export async function resolveStashCommand(): Promise<string> {
     }
     const candidate = join(pathEntry, "stash");
     if (await isExecutable(candidate)) {
-      return candidate;
+      return { command: candidate, args: ["daemon"] };
     }
   }
 
-  throw new Error("Could not find the `stash` binary on PATH");
+  throw new Error("Could not resolve a command to run `stash daemon`");
 }
 
 async function promptField(field: Field): Promise<string> {
@@ -139,30 +151,6 @@ async function readBackgroundStatus(dir: string): Promise<PersistedBackgroundSta
   return JSON.parse(await readFile(statusPath, "utf8")) as PersistedBackgroundStatus;
 }
 
-async function warnIfServiceUnavailable(
-  serviceHandle: ServiceHandle | undefined,
-  stderr: NodeJS.WriteStream,
-): Promise<void> {
-  if (!serviceHandle) {
-    return;
-  }
-  try {
-    const status = await serviceHandle.status();
-    if (!status.installed) {
-      writeLine(stderr, "warning: background service is not installed");
-    }
-  } catch (error) {
-    if (isUnsupportedPlatformError(error)) {
-      writeLine(
-        stderr,
-        "warning: service install is not supported on this platform yet; run `stash background watch` manually",
-      );
-      return;
-    }
-    throw error;
-  }
-}
-
 function renderGitWarning(stdout: NodeJS.WriteStream): void {
   const { dim, yellow } = createColors(stdout);
   writeLine(
@@ -196,7 +184,6 @@ function parseConfigValue(key: "allow-git", value: string): boolean {
   }
   throw new Error(`Invalid value for ${key}: expected true or false`);
 }
-
 async function runSetup(
   providerName: string,
   valuesFromCli: Record<string, string | boolean | undefined>,
@@ -215,42 +202,15 @@ async function runSetup(
   writeLine(stdout, `Configured ${providerName}.`);
 }
 
-async function runInit(
-  cwd: () => string,
-  readConfig: () => Promise<GlobalConfig>,
-  stdout: NodeJS.WriteStream,
-): Promise<void> {
-  const dir = cwd();
-  const alreadyInitialized = existsSync(join(dir, ".stash"));
-  await Stash.init(dir, await readConfig());
-  writeLine(stdout, alreadyInitialized ? "Already initialized." : "Initialized stash.");
-}
-
-async function registerBackgroundStash(
-  dir: string,
-  readConfig: () => Promise<GlobalConfig>,
-  writeConfig: (config: GlobalConfig) => Promise<void>,
-  serviceHandle: ServiceHandle | undefined,
-  stderr: NodeJS.WriteStream,
-): Promise<void> {
-  const globalConfig = await readConfig();
-  const stash = await Stash.load(dir, globalConfig);
-  if (Object.keys(stash.connections).length === 0) {
-    writeLine(stderr, "warning: this stash won't sync until a provider is connected");
-  }
-  await writeConfig(addBackgroundStash(globalConfig, dir));
-  await warnIfServiceUnavailable(serviceHandle, stderr);
-}
-
 async function runConnect(
   providerName: string,
   valuesFromCli: Record<string, string | boolean | undefined>,
   deps: Required<Pick<CliDependencies, "cwd" | "readGlobalConfig" | "writeGlobalConfig">> & {
-    service?: ServiceHandle;
+    getService?: () => Promise<ServiceHandle>;
   },
   stdout: NodeJS.WriteStream,
-  stderr: NodeJS.WriteStream,
 ): Promise<void> {
+  const { dim, green } = createColors(stdout);
   const provider = getProvider(providerName);
   let globalConfig = await deps.readGlobalConfig();
   const setupValues = await collectFields(
@@ -265,29 +225,57 @@ async function runConnect(
   const stash = await Stash.init(dir, globalConfig);
   const connectValues = await collectFields(provider.spec.connect, valuesFromCli);
   await stash.connect(providerName, connectValues);
-
-  if (valuesFromCli.background === true) {
-    await registerBackgroundStash(
-      dir,
-      deps.readGlobalConfig,
-      deps.writeGlobalConfig,
-      deps.service,
-      stderr,
-    );
-  }
+  globalConfig = await deps.readGlobalConfig();
+  await deps.writeGlobalConfig(addBackgroundStash(globalConfig, resolve(dir)));
 
   writeLine(stdout, `Connected ${providerName}.`);
   await warnIfGitSyncBlocked(dir, stdout);
+
+  if (!deps.getService) {
+    return;
+  }
+
+  try {
+    const status = await (await deps.getService()).status();
+    if (status.running) {
+      writeLine(stdout, `${green("Background sync is on")} ${dim("·")} ${dim("This stash is now syncing automatically")}`);
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === "Could not resolve a command to run `stash daemon`") {
+      return;
+    }
+    if (!isUnsupportedPlatformError(error)) {
+      throw error;
+    }
+  }
 }
 
 async function runDisconnect(
-  providerName: string,
+  providerName: string | undefined,
   cwd: () => string,
   readConfig: () => Promise<GlobalConfig>,
+  writeConfig: (config: GlobalConfig) => Promise<void>,
   stdout: NodeJS.WriteStream,
 ): Promise<void> {
-  const stash = await Stash.load(cwd(), await readConfig());
+  const dir = cwd();
+  const globalConfig = await readConfig();
+  const stash = await Stash.load(dir, globalConfig);
+
+  if (!providerName) {
+    for (const name of Object.keys(stash.connections)) {
+      await stash.disconnect(name);
+    }
+    await writeConfig(removeBackgroundStash(globalConfig, resolve(dir)));
+    await rm(join(dir, ".stash"), { recursive: true, force: true });
+    writeLine(stdout, "Disconnected stash.");
+    return;
+  }
+
   await stash.disconnect(providerName);
+  if (Object.keys(stash.connections).length === 0) {
+    await writeConfig(removeBackgroundStash(globalConfig, resolve(dir)));
+    await rm(join(dir, ".stash"), { recursive: true, force: true });
+  }
   writeLine(stdout, `Disconnected ${providerName}.`);
 }
 
@@ -340,17 +328,119 @@ function formatChangeParts(status: {
   return parts;
 }
 
+function formatStashCount(count: number): string {
+  return `${count} ${count === 1 ? "stash" : "stashes"}`;
+}
+
+async function runStatusAll(
+  readConfig: () => Promise<GlobalConfig>,
+  serviceHandle: ServiceHandle,
+  stdout: NodeJS.WriteStream,
+): Promise<void> {
+  const { dim, green, red } = createColors(stdout);
+  const globalConfig = await readConfig();
+  const stashes = getBackgroundStashes(globalConfig);
+
+  if (stashes.length === 0) {
+    writeLine(stdout, "No stashes connected yet — run `stash connect <provider>` in a directory to add one");
+    return;
+  }
+
+  try {
+    const current = await serviceHandle.status();
+    if (current.running) {
+      writeLine(stdout, `${green("Background sync is on")} ${dim("·")} ${dim(`watching ${formatStashCount(stashes.length)}`)}`);
+    } else {
+      writeLine(stdout, red("Background sync is off"));
+      writeLine(stdout, dim(`Run \`stash start\` to resume syncing ${formatStashCount(stashes.length)}`));
+    }
+  } catch (error) {
+    if (isUnsupportedPlatformError(error)) {
+      writeLine(stdout, red("Background sync is not supported on this platform"));
+    } else {
+      throw error;
+    }
+  }
+
+  writeLine(stdout, "");
+
+  for (const dir of stashes) {
+    const title = basename(dir);
+    if (!existsSync(dir)) {
+      writeLine(stdout, `${red("✗")} ${title}`);
+      writeLine(stdout, dim(`  ${dir}`));
+      writeLine(stdout, dim("  Directory not found"));
+      continue;
+    }
+
+    if (!isStashDirectory(dir)) {
+      writeLine(stdout, `${red("✗")} ${title}`);
+      writeLine(stdout, dim(`  ${dir}`));
+      writeLine(stdout, dim("  Not a stash"));
+      continue;
+    }
+
+    const stash = await Stash.load(dir, globalConfig);
+    const persistedStatus = await readBackgroundStatus(dir);
+    const localStatus = stash.status();
+    const connectionNames = Object.keys(stash.connections);
+
+    if (persistedStatus?.kind === "error") {
+      writeLine(stdout, `${red("✗")} ${title}`);
+      writeLine(stdout, dim(`  ${dir}`));
+      for (const providerName of connectionNames) {
+        const conn = stash.connections[providerName];
+        const label = conn.repo ?? Object.values(conn).join(", ");
+        writeLine(stdout, `  ${providerName}  ${label} ${dim("·")} ${red(persistedStatus.error ?? "unknown error")}`);
+      }
+      continue;
+    }
+
+    writeLine(stdout, `${green("●")} ${title}`);
+    writeLine(stdout, dim(`  ${dir}`));
+
+    for (const providerName of connectionNames) {
+      const conn = stash.connections[providerName];
+      const label = conn.repo ?? Object.values(conn).join(", ");
+      if (persistedStatus === null || localStatus.lastSync === null) {
+        writeLine(stdout, `  ${providerName}  ${label} ${dim("·")} ${dim("Waiting for first sync")}`);
+        continue;
+      }
+
+      const parts = formatChangeParts(localStatus);
+      if (parts.length > 0) {
+        writeLine(
+          stdout,
+          `  ${providerName}  ${label} ${dim("·")} Local changes: ${parts.join(", ")} ${dim("·")} ${dim(`synced ${formatTimeAgo(localStatus.lastSync)}`)}`,
+        );
+      } else {
+        writeLine(
+          stdout,
+          `  ${providerName}  ${label} ${dim("·")} ${dim(`Up to date · synced ${formatTimeAgo(localStatus.lastSync)}`)}`,
+        );
+      }
+    }
+  }
+}
+
 async function runStatus(
   cwd: () => string,
   readConfig: () => Promise<GlobalConfig>,
+  serviceHandle: ServiceHandle,
   stdout: NodeJS.WriteStream,
 ): Promise<void> {
-  const { dim, green, yellow } = createColors(stdout);
-  const stash = await Stash.load(cwd(), await readConfig());
+  const { dim, green, yellow, red } = createColors(stdout);
+  const dir = cwd();
+  if (!isStashDirectory(dir)) {
+    throw new Error("Not in a stash directory — run `stash status --all` to view all stashes");
+  }
+
+  const globalConfig = await readConfig();
+  const stash = await Stash.load(dir, globalConfig);
   const connectionNames = Object.keys(stash.connections);
 
   if (connectionNames.length === 0) {
-    writeLine(stdout, dim("no connections — run `stash connect <provider>` to get started"));
+    writeLine(stdout, dim("No connections — run `stash connect <provider>` to get started"));
     return;
   }
 
@@ -366,140 +456,87 @@ async function runStatus(
     if (status.lastSync) {
       const ago = formatTimeAgo(status.lastSync);
       if (parts.length > 0) {
-        writeLine(stdout, `  ${parts.join(", ")} ${dim("·")} ${dim(`synced ${ago}`)}`);
+        writeLine(stdout, `  Local changes: ${parts.join(", ")} ${dim("·")} ${dim(`synced ${ago}`)}`);
       } else {
-        writeLine(stdout, dim(`  up to date · synced ${ago}`));
+        writeLine(stdout, dim(`  Up to date · synced ${ago}`));
       }
     } else if (parts.length > 0) {
-      writeLine(stdout, `  ${parts.join(", ")} ${dim("·")} ${dim("never synced")}`);
+      writeLine(stdout, `  Local changes: ${parts.join(", ")} ${dim("·")} ${dim("Never synced")}`);
     } else {
-      writeLine(stdout, dim("  never synced"));
-    }
-  }
-}
-
-async function runBackgroundInstall(
-  serviceHandle: ServiceHandle,
-  stdout: NodeJS.WriteStream,
-): Promise<void> {
-  await serviceHandle.install();
-  writeLine(stdout, "Installed background service.");
-}
-
-async function runBackgroundUninstall(
-  serviceHandle: ServiceHandle,
-  stdout: NodeJS.WriteStream,
-): Promise<void> {
-  await serviceHandle.uninstall();
-  writeLine(stdout, "Uninstalled background service.");
-}
-
-async function runBackgroundAdd(
-  dirArg: string | undefined,
-  cwd: () => string,
-  readConfig: () => Promise<GlobalConfig>,
-  writeConfig: (config: GlobalConfig) => Promise<void>,
-  serviceHandle: ServiceHandle | undefined,
-  stdout: NodeJS.WriteStream,
-  stderr: NodeJS.WriteStream,
-): Promise<void> {
-  const dir = resolve(dirArg ?? cwd());
-  await registerBackgroundStash(dir, readConfig, writeConfig, serviceHandle, stderr);
-  writeLine(stdout, `Registered ${dir} for background sync.`);
-}
-
-async function runBackgroundRemove(
-  dirArg: string | undefined,
-  cwd: () => string,
-  readConfig: () => Promise<GlobalConfig>,
-  writeConfig: (config: GlobalConfig) => Promise<void>,
-  stdout: NodeJS.WriteStream,
-): Promise<void> {
-  const dir = resolve(dirArg ?? cwd());
-  const globalConfig = await readConfig();
-  await writeConfig(removeBackgroundStash(globalConfig, dir));
-  writeLine(stdout, `Removed ${dir} from background sync.`);
-}
-
-async function runBackgroundStatus(
-  readConfig: () => Promise<GlobalConfig>,
-  serviceHandle: ServiceHandle,
-  stdout: NodeJS.WriteStream,
-): Promise<void> {
-  const { dim, green, red } = createColors(stdout);
-
-  let serviceRunning = false;
-  let serviceMessage: string | null = null;
-  try {
-    const current = await serviceHandle.status();
-    if (!current.installed) {
-      serviceMessage = dim("service not installed — run `stash background install`");
-    } else if (current.running) {
-      serviceRunning = true;
-    } else {
-      serviceMessage = red(
-        "background service is stopped — run `stash background install` to restart",
-      );
-    }
-  } catch (error) {
-    if (isUnsupportedPlatformError(error)) {
-      serviceMessage = dim(
-        "service install not supported on this platform — run `stash background watch` manually",
-      );
-    } else {
-      throw error;
+      writeLine(stdout, dim("  Never synced"));
     }
   }
 
-  const globalConfig = await readConfig();
-  const stashes = getBackgroundStashes(globalConfig);
-  if (serviceRunning) {
-    writeLine(stdout, dim("stash is syncing in the background"));
-  } else if (serviceMessage) {
-    writeLine(stdout, serviceMessage);
-  }
-
-  if (stashes.length === 0) {
-    writeLine(stdout, dim("\nno stashes registered — run `stash background add` to add one"));
+  if (!getBackgroundStashes(globalConfig).includes(resolve(dir))) {
     return;
   }
 
-  writeLine(stdout, "");
-
-  for (const dir of stashes) {
-    if (!existsSync(dir)) {
-      writeLine(stdout, `${red("✗")} ${dir}`);
-      writeLine(stdout, dim("  directory not found"));
-      continue;
-    }
-
-    const status = await readBackgroundStatus(dir);
-    if (!status) {
-      writeLine(stdout, `${dim("○")} ${dir}`);
-      writeLine(stdout, dim("  waiting for first sync"));
-      continue;
-    }
-
-    if (status.kind === "error") {
-      writeLine(stdout, `${red("✗")} ${dir}`);
-      const ago = status.lastSync ? formatTimeAgo(new Date(status.lastSync)) : null;
-      const errorMsg = status.error ?? "unknown error";
-      writeLine(
-        stdout,
-        ago ? `  ${red(errorMsg)} ${dim("·")} ${dim(`synced ${ago}`)}` : `  ${red(errorMsg)}`,
-      );
-      continue;
-    }
-
-    const ago = status.lastSync ? formatTimeAgo(new Date(status.lastSync)) : null;
-    if (status.summary) {
-      writeLine(stdout, `${green("●")} ${dir}`);
-      writeLine(stdout, `  ${status.summary} ${dim("·")} ${dim(`synced ${ago ?? "unknown"}`)}`);
+  try {
+    const current = await serviceHandle.status();
+    if (current.running) {
+      writeLine(stdout, `  ${green("Background sync is on")} ${dim("·")} ${dim("Use `stash status --all` to view all stashes")}`);
     } else {
-      writeLine(stdout, `${green("●")} ${dir}`);
-      writeLine(stdout, dim(`  up to date · synced ${ago ?? "unknown"}`));
+      writeLine(stdout, `  ${red("Background sync is off")} ${dim("·")} ${dim("Run `stash start` to keep connected stashes in sync")}`);
     }
+  } catch (error) {
+    if (isUnsupportedPlatformError(error)) {
+      writeLine(stdout, `  ${red("Background sync is not supported on this platform")}`);
+      return;
+    }
+    throw error;
   }
+}
+
+async function runStart(
+  serviceHandle: ServiceHandle,
+  readConfig: () => Promise<GlobalConfig>,
+  stdout: NodeJS.WriteStream,
+): Promise<void> {
+  const { dim, green, red } = createColors(stdout);
+  try {
+    const current = await serviceHandle.status();
+    if (current.installed && current.running) {
+      writeLine(stdout, green("Background sync is already running"));
+      return;
+    }
+  } catch (error) {
+    if (isUnsupportedPlatformError(error)) {
+      writeLine(stdout, red("Background sync is not supported on this platform"));
+      process.exitCode = 1;
+      return;
+    }
+    throw error;
+  }
+  await serviceHandle.install();
+  const count = getBackgroundStashes(await readConfig()).length;
+  writeLine(stdout, green("Background sync is on"));
+  writeLine(stdout, dim(`Watching ${formatStashCount(count)} · starts on startup`));
+}
+
+async function runStop(
+  serviceHandle: ServiceHandle,
+  readConfig: () => Promise<GlobalConfig>,
+  stdout: NodeJS.WriteStream,
+): Promise<void> {
+  const { dim, red } = createColors(stdout);
+  try {
+    const current = await serviceHandle.status();
+    if (!current.installed && !current.running) {
+      writeLine(stdout, red("Background sync is not running"));
+      return;
+    }
+  } catch (error) {
+    if (isUnsupportedPlatformError(error)) {
+      writeLine(stdout, red("Background sync is not running"));
+      return;
+    }
+    throw error;
+  }
+
+  await serviceHandle.uninstall();
+  const count = getBackgroundStashes(await readConfig()).length;
+  writeLine(stdout, red("Background sync is off"));
+  writeLine(stdout, dim(`Run \`stash start\` to resume syncing ${formatStashCount(count)}`));
 }
 
 async function ensureInitializedStash(
@@ -552,13 +589,13 @@ function addFieldOptions(command: Command, fields: Field[]): void {
   }
 }
 
-async function createDefaultService(): Promise<ServiceHandle> {
-  const command = await resolveStashCommand();
+async function createDefaultService(argv = process.argv): Promise<ServiceHandle> {
+  const launch = await resolveServiceLaunch(argv);
   return new Daemon({
     name: SERVICE_NAME,
     description: SERVICE_DESCRIPTION,
-    command,
-    args: ["background", "watch"],
+    command: launch.command,
+    args: launch.args,
     env: process.env.PATH ? { PATH: process.env.PATH } : undefined,
   });
 }
@@ -568,7 +605,7 @@ export async function main(argv = process.argv, deps: CliDependencies = {}): Pro
   const readConfig = deps.readGlobalConfig ?? readGlobalConfig;
   const writeConfig = deps.writeGlobalConfig ?? writeGlobalConfig;
   const serviceHandle = deps.service;
-  const getService = async () => serviceHandle ?? (await createDefaultService());
+  const getService = async () => serviceHandle ?? (await createDefaultService(argv));
   const runDaemonCommand = deps.runDaemon ?? runDaemon;
   const stdout = deps.stdout ?? process.stdout;
   const stderr = deps.stderr ?? process.stderr;
@@ -604,11 +641,9 @@ export async function main(argv = process.argv, deps: CliDependencies = {}): Pro
     .command("connect")
     .description("Connect this stash to a provider")
     .argument("<provider>", "Provider name")
-    .option("--background", "Register this stash for background syncing")
     .allowUnknownOption(true)
     .action(async (providerName: string, _opts: unknown, command: Command) => {
       const opts = command.opts() as Record<string, string | boolean | undefined>;
-      const svc = opts.background === true ? await getService() : undefined;
       await runConnect(
         providerName,
         opts,
@@ -616,26 +651,18 @@ export async function main(argv = process.argv, deps: CliDependencies = {}): Pro
           cwd,
           readGlobalConfig: readConfig,
           writeGlobalConfig: writeConfig,
-          service: svc,
+          getService,
         },
         stdout,
-        stderr,
       );
     });
 
   program
     .command("disconnect")
     .description("Disconnect provider from this stash")
-    .argument("<provider>", "Provider name")
-    .action(async (providerName: string) => {
-      await runDisconnect(providerName, cwd, readConfig, stdout);
-    });
-
-  program
-    .command("init")
-    .description("Initialize the current directory as a stash")
-    .action(() => {
-      return runInit(cwd, readConfig, stdout);
+    .argument("[provider]", "Provider name")
+    .action(async (providerName?: string) => {
+      await runDisconnect(providerName, cwd, readConfig, writeConfig, stdout);
     });
   program
     .command("sync")
@@ -648,7 +675,15 @@ export async function main(argv = process.argv, deps: CliDependencies = {}): Pro
   program
     .command("status")
     .description("Show local stash status")
-    .action(() => runStatus(cwd, readConfig, stdout));
+    .option("--all", "Show all connected stashes")
+    .action(async (_opts: unknown, command: Command) => {
+      const opts = command.opts() as { all?: boolean };
+      if (opts.all) {
+        await runStatusAll(readConfig, await getService(), stdout);
+        return;
+      }
+      await runStatus(cwd, readConfig, await getService(), stdout);
+    });
 
   const configCommand = program.command("config").description("Manage stash config");
 
@@ -665,40 +700,18 @@ export async function main(argv = process.argv, deps: CliDependencies = {}): Pro
     .argument("<key>", "Config key")
     .action((key: string) => runConfigGet(key, cwd, readConfig, stdout));
 
-  const backgroundCommand = program.command("background").description("Manage background syncing");
+  program
+    .command("start")
+    .description("Start background sync")
+    .action(async () => runStart(await getService(), readConfig, stdout));
 
-  backgroundCommand
-    .command("install")
-    .description("Install the background service")
-    .action(async () => runBackgroundInstall(await getService(), stdout));
+  program
+    .command("stop")
+    .description("Stop background sync")
+    .action(async () => runStop(await getService(), readConfig, stdout));
 
-  backgroundCommand
-    .command("uninstall")
-    .description("Remove the background service")
-    .action(async () => runBackgroundUninstall(await getService(), stdout));
-
-  backgroundCommand
-    .command("add")
-    .description("Register a stash for background syncing")
-    .argument("[dir]", "Stash directory")
-    .action(async (dirArg?: string) => {
-      const svc = await getService().catch(() => undefined);
-      await runBackgroundAdd(dirArg, cwd, readConfig, writeConfig, svc, stdout, stderr);
-    });
-
-  backgroundCommand
-    .command("remove")
-    .description("Unregister a stash from background syncing")
-    .argument("[dir]", "Stash directory")
-    .action((dirArg?: string) => runBackgroundRemove(dirArg, cwd, readConfig, writeConfig, stdout));
-
-  backgroundCommand
-    .command("status")
-    .description("Show background service and stash status")
-    .action(async () => runBackgroundStatus(readConfig, await getService(), stdout));
-
-  backgroundCommand
-    .command("watch", { hidden: true })
+  program
+    .command("daemon", { hidden: true })
     .description("Run the background daemon")
     .action(() => runDaemonCommand());
 

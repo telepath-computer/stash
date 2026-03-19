@@ -93,7 +93,7 @@ Loads an existing stash rooted at `dir`.
 - Throws if the directory is not already a stash.
 - Runs local metadata migrations first when older prerelease stash layouts are detected.
 - Uses the provided `globalConfig` plus local `.stash/config.json`.
-- The current error guidance points callers toward `stash init` or `stash connect <provider>`.
+- The current error guidance points callers toward `stash connect <provider>`.
 
 ### `Stash.init()`
 
