@@ -172,7 +172,7 @@ test("GitHubProvider.fetch: no remote snapshot uses tree listing", async () => {
       body: {
         tree: [
           { path: "readme.md", type: "blob" },
-          { path: ".stash/config.local.json", type: "blob" },
+          { path: ".stash/config.json", type: "blob" },
           { path: ".stash/snapshot.json", type: "blob" },
           { path: "dir/note.md", type: "blob" },
         ],
@@ -202,7 +202,7 @@ test("GitHubProvider.fetch: no remote snapshot uses tree listing", async () => {
     const result = await provider.fetch({});
     assert.equal(result.added.get("readme.md")?.type, "text");
     assert.equal(result.added.get("dir/note.md")?.type, "text");
-    assert.equal(result.added.has(".stash/config.local.json"), false);
+    assert.equal(result.added.has(".stash/config.json"), false);
     assert.equal(result.added.has(".stash/snapshot.json"), false);
     api.assertDone();
   } finally {

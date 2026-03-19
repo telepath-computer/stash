@@ -11,3 +11,19 @@ export class SyncLockError extends Error {
     this.name = "SyncLockError";
   }
 }
+
+export class GitRepoError extends Error {
+  constructor(
+    message = "git repository detected — run `stash config set allow-git true` to allow syncing",
+  ) {
+    super(message);
+    this.name = "GitRepoError";
+  }
+}
+
+export class MigrationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MigrationError";
+  }
+}

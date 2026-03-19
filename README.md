@@ -64,7 +64,9 @@ stash background uninstall
 ## Config
 
 - Global config lives at `~/.stash/config.json` or `$XDG_CONFIG_HOME/stash/config.json`.
-- Per-stash connection config lives at `.stash/config.local.json` inside the synced directory.
+- Per-stash config lives at `.stash/config.json` inside the synced directory.
+
+Older prerelease stashes using `.stash/config.local.json` and `.stash/snapshot.local/` are migrated automatically on startup.
 
 Example global config:
 
@@ -83,6 +85,7 @@ Example global config:
 
 - `docs/api.md` - developer-facing `Stash` and provider contracts
 - `docs/architecture.md` - core components and repo boundaries
+- `docs/config.md` - config locations, metadata files, and config key conventions
 - `docs/sync.md` - sync lifecycle, locking, drift, and snapshot semantics
 - `docs/reconciliation.md` - merge and file-resolution rules
 - `docs/cli.md` - user-facing CLI behavior
@@ -98,6 +101,12 @@ Not blindly. On first sync, local and remote content are reconciled rather than 
 **Can I use the same repo with both stash and git?**
 
 Yes, but not on the same machine and directory. Stash syncs the working tree directly to `main` through the GitHub API and does not understand local git state.
+
+## Using Stash With Git
+
+By default, stash refuses to sync a directory that contains `.git/`. Branch switches look like mass file edits to stash, so syncing inside a git working tree can push destructive changes to the remote.
+
+If you do not need git in that directory, remove `.git/`. If you intentionally want both, run `stash config set allow-git true` first, then keep stash pinned to one branch and do not switch branches while stash is active.
 
 **Does stash use branches or PRs?**
 

@@ -18,8 +18,10 @@ import { hostname } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Emitter } from "./emitter.ts";
-import { PushConflictError, SyncLockError } from "./errors.ts";
+import { GitRepoError, PushConflictError, SyncLockError } from "./errors.ts";
 import { normalizeGlobalConfig } from "./global-config.ts";
+import { getLocalConfigPath, readLocalConfig, writeLocalConfig } from "./local-config.ts";
+import { ensureMigration } from "./migrations.ts";
 import { providers as defaultProviders } from "./providers/index.ts";
 import type {
   ChangeSet,
@@ -39,10 +41,6 @@ import { isValidText } from "./utils/text.ts";
 
 export type StashEvents = {
   mutation: FileMutation;
-};
-
-type LocalConfig = {
-  connections: Record<string, ConnectionConfig>;
 };
 
 type StashOptions = {
@@ -93,10 +91,8 @@ export class Stash extends Emitter<StashEvents> {
       );
     }
 
-    const configPath = join(stashDir, "config.local.json");
-    const localConfig = existsSync(configPath)
-      ? (JSON.parse(readFileSync(configPath, "utf8")) as LocalConfig)
-      : { connections: {} };
+    await ensureMigration(dir);
+    const localConfig = await readLocalConfig(dir);
     return new Stash(
       dir,
       normalizeGlobalConfig(globalConfig),
@@ -111,11 +107,11 @@ export class Stash extends Emitter<StashEvents> {
     options?: StashOptions,
   ): Promise<Stash> {
     const stashDir = join(dir, ".stash");
-    const configPath = join(stashDir, "config.local.json");
     mkdirSync(stashDir, { recursive: true });
-    mkdirSync(join(stashDir, "snapshot.local"), { recursive: true });
-    if (!existsSync(configPath)) {
-      writeFileSync(configPath, JSON.stringify({ connections: {} }, null, 2), "utf8");
+    await ensureMigration(dir);
+    mkdirSync(join(stashDir, "snapshot"), { recursive: true });
+    if (!existsSync(getLocalConfigPath(dir))) {
+      await writeLocalConfig(dir, { connections: {} });
     }
     return Stash.load(dir, globalConfig, options);
   }
@@ -141,12 +137,12 @@ export class Stash extends Emitter<StashEvents> {
 
   async connect(provider: string, fields: Record<string, string>): Promise<void> {
     this._connections[provider] = { ...fields };
-    this.writeLocalConfig();
+    await this.persistLocalConfig();
   }
 
   async disconnect(provider: string): Promise<void> {
     delete this._connections[provider];
-    this.writeLocalConfig();
+    await this.persistLocalConfig();
   }
 
   async sync(): Promise<void> {
@@ -157,6 +153,11 @@ export class Stash extends Emitter<StashEvents> {
     this.syncInFlight = true;
 
     try {
+      const localConfig = await readLocalConfig(this.dir);
+      if (this.hasGitRepository() && localConfig["allow-git"] !== true) {
+        throw new GitRepoError();
+      }
+
       const connectionNames = Object.keys(this._connections);
       if (connectionNames.length === 0) {
         return;
@@ -777,13 +778,12 @@ export class Stash extends Emitter<StashEvents> {
     return readFileSync(snapshotPath, "utf8");
   }
 
-  private writeLocalConfig(): void {
-    const localConfig: LocalConfig = { connections: this._connections };
-    writeFileSync(
-      join(this.dir, ".stash", "config.local.json"),
-      JSON.stringify(localConfig, null, 2),
-      "utf8",
-    );
+  private async persistLocalConfig(): Promise<void> {
+    const currentConfig = await readLocalConfig(this.dir);
+    await writeLocalConfig(this.dir, {
+      ...currentConfig,
+      connections: this._connections,
+    });
   }
 
   private acquireSyncLock(): void {
@@ -919,7 +919,11 @@ export class Stash extends Emitter<StashEvents> {
   }
 
   private snapshotLocalDir(): string {
-    return join(this.dir, ".stash", "snapshot.local");
+    return join(this.dir, ".stash", "snapshot");
+  }
+
+  private hasGitRepository(): boolean {
+    return existsSync(join(this.dir, ".git"));
   }
 
   private syncLockPath(): string {

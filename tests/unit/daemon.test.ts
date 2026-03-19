@@ -24,9 +24,9 @@ test("daemon: starts registered watches, writes status.json, and hot-reloads con
   const stashB = join(workspace, "stash-b");
   const configPath = join(workspace, "config.json");
   const started: string[] = [];
-    const stopped: string[] = [];
-    const logs: string[] = [];
-    const watchCallbacks = new Map<string, (status: WatchStatus) => Promise<void>>();
+  const stopped: string[] = [];
+  const logs: string[] = [];
+  const watchCallbacks = new Map<string, (status: WatchStatus) => Promise<void>>();
   let config: GlobalConfig = {
     providers: {},
     background: {
@@ -96,9 +96,18 @@ test("daemon: starts registered watches, writes status.json, and hot-reloads con
     assert.deepEqual(started, [stashA, stashB]);
     assert.deepEqual(stopped, [stashA]);
 
-    assert.ok(logs.some((m) => m.includes(`watching ${stashA}`)), "should log when starting a watch");
-    assert.ok(logs.some((m) => m.includes(`stopped watching ${stashA}`)), "should log when stopping a watch");
-    assert.ok(logs.some((m) => m.includes(`watching ${stashB}`)), "should log new watch after reload");
+    assert.ok(
+      logs.some((m) => m.includes(`watching ${stashA}`)),
+      "should log when starting a watch",
+    );
+    assert.ok(
+      logs.some((m) => m.includes(`stopped watching ${stashA}`)),
+      "should log when stopping a watch",
+    );
+    assert.ok(
+      logs.some((m) => m.includes(`watching ${stashB}`)),
+      "should log new watch after reload",
+    );
 
     await daemon.stop();
   } finally {
@@ -223,6 +232,64 @@ test("daemon: continues in poll-only mode when native watcher throws", async () 
     assert.equal(existsSync(statusPath), true, "status.json should still be written");
 
     await daemon.stop();
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("daemon: persists git safety errors to status.json and sync.log", async () => {
+  const workspace = await makeTempDir("stash-daemon-git-error");
+  const stashDir = join(workspace, "stash");
+  const configPath = join(workspace, "config.json");
+  const errorMessage =
+    "git repository detected — run `stash config set allow-git true` to allow syncing";
+
+  try {
+    await mkdir(join(stashDir, ".stash"), { recursive: true });
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        providers: {},
+        background: { stashes: [stashDir] },
+      } satisfies GlobalConfig),
+      "utf8",
+    );
+
+    const daemon = new BackgroundDaemon({
+      configPath,
+      readGlobalConfig: async () => ({
+        providers: {},
+        background: { stashes: [stashDir] },
+      }),
+      subscribe: async () => ({
+        unsubscribe: async () => {},
+      }),
+      createWatch: async ({ onStatus }) => ({
+        start: async () => {
+          await onStatus({
+            kind: "error",
+            error: errorMessage,
+            lastSync: null,
+            nextCheck: new Date("2026-03-11T14:31:00.000Z"),
+          });
+        },
+        stop: async () => {},
+      }),
+    });
+
+    await daemon.start();
+    await daemon.stop();
+
+    const status = JSON.parse(await readFile(join(stashDir, ".stash", "status.json"), "utf8"));
+    assert.deepEqual(status, {
+      kind: "error",
+      lastSync: null,
+      summary: null,
+      error: errorMessage,
+    });
+
+    const log = await readFile(join(stashDir, ".stash", "sync.log"), "utf8");
+    assert.equal(log.includes(errorMessage), true);
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }

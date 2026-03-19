@@ -337,7 +337,7 @@ test("scenario 4: connect stores stash connection config", E2E_OPTIONS, async ()
     await runCli(dir, ["connect", "github", "--repo", "user/repo"], {
       XDG_CONFIG_HOME: xdg,
     });
-    const config = JSON.parse(await readFile(join(dir, ".stash", "config.local.json"), "utf8"));
+    const config = JSON.parse(await readFile(join(dir, ".stash", "config.json"), "utf8"));
     assert.deepEqual(config, { connections: { github: { repo: "user/repo" } } });
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -364,9 +364,7 @@ test("scenario 5: connect auto-writes setup config when missing", E2E_OPTIONS, a
       },
     });
 
-    const localConfig = JSON.parse(
-      await readFile(join(dir, ".stash", "config.local.json"), "utf8"),
-    );
+    const localConfig = JSON.parse(await readFile(join(dir, ".stash", "config.json"), "utf8"));
     assert.deepEqual(localConfig, {
       connections: {
         github: { repo: "user/repo" },
@@ -392,9 +390,7 @@ test("scenario 6: disconnect removes connection and sync becomes no-op", E2E_OPT
     });
     await runCli(dir, ["disconnect", "github"], { XDG_CONFIG_HOME: xdg });
 
-    const localConfig = JSON.parse(
-      await readFile(join(dir, ".stash", "config.local.json"), "utf8"),
-    );
+    const localConfig = JSON.parse(await readFile(join(dir, ".stash", "config.json"), "utf8"));
     assert.deepEqual(localConfig, { connections: {} });
 
     await runCli(dir, ["sync"], { XDG_CONFIG_HOME: xdg });
@@ -437,7 +433,7 @@ test("scenario 8: first sync pulls remote files to empty local", E2E_OPTIONS, as
     assert.equal(await readFile(join(machine, "readme.md"), "utf8"), "welcome");
     assert.equal(await readFile(join(machine, "data/config.json"), "utf8"), "{}");
     assert.equal(existsSync(join(machine, ".stash", "snapshot.json")), true);
-    assert.equal(existsSync(join(machine, ".stash", "snapshot.local", "readme.md")), true);
+    assert.equal(existsSync(join(machine, ".stash", "snapshot", "readme.md")), true);
   } finally {
     if (repo) await deleteRepo(repo.fullName);
     await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
@@ -1011,11 +1007,8 @@ test("scenario 31: .stash local metadata is ignored remotely", E2E_OPTIONS, asyn
   try {
     setup = await setupTwoMachineBaseline({ "hello.md": "hello" });
     await syncWithRetry(setup.machineA.stash);
-    assert.equal(await remoteFileExists(setup.repo.fullName, ".stash/config.local.json"), false);
-    assert.equal(
-      await remoteFileExists(setup.repo.fullName, ".stash/snapshot.local/hello.md"),
-      false,
-    );
+    assert.equal(await remoteFileExists(setup.repo.fullName, ".stash/config.json"), false);
+    assert.equal(await remoteFileExists(setup.repo.fullName, ".stash/snapshot/hello.md"), false);
     assert.equal(await remoteFileExists(setup.repo.fullName, ".stash/snapshot.json"), true);
   } finally {
     if (setup) {
@@ -1162,84 +1155,92 @@ test("scenario 36: case-only rename syncs to remote and back", E2E_OPTIONS, asyn
   }
 });
 
-test("e2e: background daemon syncs a registered stash and writes status.json", E2E_OPTIONS, async () => {
-  let repo: RepoInfo | null = null;
-  const dirs: string[] = [];
+test(
+  "e2e: background daemon syncs a registered stash and writes status.json",
+  E2E_OPTIONS,
+  async () => {
+    let repo: RepoInfo | null = null;
+    const dirs: string[] = [];
 
-  try {
-    repo = await createRepo();
-    const dir = await makeTempDir("daemon-e2e");
-    const xdgDir = await makeTempDir("daemon-e2e-xdg");
-    dirs.push(dir, xdgDir);
+    try {
+      repo = await createRepo();
+      const dir = await makeTempDir("daemon-e2e");
+      const xdgDir = await makeTempDir("daemon-e2e-xdg");
+      dirs.push(dir, xdgDir);
 
-    const globalConfig: GlobalConfig = {
-      providers: { github: { token: token! } },
-      background: { stashes: [dir] },
-    };
+      const globalConfig: GlobalConfig = {
+        providers: { github: { token: token! } },
+        background: { stashes: [dir] },
+      };
 
-    const stash = await Stash.init(dir, globalConfig);
-    await stash.connect("github", { repo: repo.fullName });
-    await writeLocalFiles(dir, { "daemon-test.txt": "hello from daemon" });
+      const stash = await Stash.init(dir, globalConfig);
+      await stash.connect("github", { repo: repo.fullName });
+      await writeLocalFiles(dir, { "daemon-test.txt": "hello from daemon" });
 
-    const configDir = join(xdgDir, "stash");
-    await mkdir(configDir, { recursive: true });
-    await writeFile(join(configDir, "config.json"), JSON.stringify(globalConfig, null, 2), "utf8");
+      const configDir = join(xdgDir, "stash");
+      await mkdir(configDir, { recursive: true });
+      await writeFile(
+        join(configDir, "config.json"),
+        JSON.stringify(globalConfig, null, 2),
+        "utf8",
+      );
 
-    const daemon = spawn("node", [CLI_PATH, "background", "watch"], {
-      env: { ...process.env, XDG_CONFIG_HOME: xdgDir },
-      stdio: "pipe",
-    });
-    let daemonStdout = "";
-    let daemonStderr = "";
-    daemon.stdout.setEncoding("utf8");
-    daemon.stderr.setEncoding("utf8");
-    daemon.stdout.on("data", (chunk) => {
-      daemonStdout += chunk;
-    });
-    daemon.stderr.on("data", (chunk) => {
-      daemonStderr += chunk;
-    });
+      const daemon = spawn("node", [CLI_PATH, "background", "watch"], {
+        env: { ...process.env, XDG_CONFIG_HOME: xdgDir },
+        stdio: "pipe",
+      });
+      let daemonStdout = "";
+      let daemonStderr = "";
+      daemon.stdout.setEncoding("utf8");
+      daemon.stderr.setEncoding("utf8");
+      daemon.stdout.on("data", (chunk) => {
+        daemonStdout += chunk;
+      });
+      daemon.stderr.on("data", (chunk) => {
+        daemonStderr += chunk;
+      });
 
-    const statusPath = join(dir, ".stash", "status.json");
-    let synced = false;
-    let lastStatus: Record<string, unknown> | null = null;
-    for (let i = 0; i < 30; i += 1) {
-      await sleep(2_000);
-      if (existsSync(statusPath)) {
-        const status = JSON.parse(await readFile(statusPath, "utf8")) as Record<string, unknown>;
-        lastStatus = status;
-        if (status.kind === "synced" || status.kind === "checked") {
-          synced = true;
-          break;
+      const statusPath = join(dir, ".stash", "status.json");
+      let synced = false;
+      let lastStatus: Record<string, unknown> | null = null;
+      for (let i = 0; i < 30; i += 1) {
+        await sleep(2_000);
+        if (existsSync(statusPath)) {
+          const status = JSON.parse(await readFile(statusPath, "utf8")) as Record<string, unknown>;
+          lastStatus = status;
+          if (status.kind === "synced" || status.kind === "checked") {
+            synced = true;
+            break;
+          }
         }
       }
+
+      const waitForExit =
+        daemon.exitCode !== null
+          ? Promise.resolve()
+          : new Promise<void>((resolve) => daemon.once("exit", () => resolve()));
+      daemon.kill("SIGTERM");
+      await waitForExit;
+
+      assert.equal(
+        synced,
+        true,
+        `daemon should have synced the stash\nstdout:\n${daemonStdout}\nstderr:\n${daemonStderr}\nlast status: ${JSON.stringify(lastStatus)}`,
+      );
+
+      const status = JSON.parse(await readFile(statusPath, "utf8"));
+      assert.ok(status.lastSync, "status should have a lastSync timestamp");
+
+      const logPath = join(dir, ".stash", "sync.log");
+      assert.equal(existsSync(logPath), true, "sync.log should exist");
+      const log = await readFile(logPath, "utf8");
+      assert.ok(log.length > 0, "sync.log should not be empty");
+
+      assert.equal(await remoteFileExists(repo.fullName, "daemon-test.txt"), true);
+      assert.equal(await readRemoteText(repo.fullName, "daemon-test.txt"), "hello from daemon");
+    } finally {
+      if (repo) await deleteRepo(repo.fullName);
+      await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
     }
-
-    const waitForExit =
-      daemon.exitCode !== null
-        ? Promise.resolve()
-        : new Promise<void>((resolve) => daemon.once("exit", () => resolve()));
-    daemon.kill("SIGTERM");
-    await waitForExit;
-
-    assert.equal(
-      synced,
-      true,
-      `daemon should have synced the stash\nstdout:\n${daemonStdout}\nstderr:\n${daemonStderr}\nlast status: ${JSON.stringify(lastStatus)}`,
-    );
-
-    const status = JSON.parse(await readFile(statusPath, "utf8"));
-    assert.ok(status.lastSync, "status should have a lastSync timestamp");
-
-    const logPath = join(dir, ".stash", "sync.log");
-    assert.equal(existsSync(logPath), true, "sync.log should exist");
-    const log = await readFile(logPath, "utf8");
-    assert.ok(log.length > 0, "sync.log should not be empty");
-
-    assert.equal(await remoteFileExists(repo.fullName, "daemon-test.txt"), true);
-    assert.equal(await readRemoteText(repo.fullName, "daemon-test.txt"), "hello from daemon");
-  } finally {
-    if (repo) await deleteRepo(repo.fullName);
-    await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
-  }
-});
+  },
+);

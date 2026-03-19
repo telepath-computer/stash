@@ -21,7 +21,7 @@ test("reconcile: remote modified, local unchanged", async () => {
   assert.deepEqual(result, [{ path: "a.md", disk: "write", remote: "skip", content: "new" }]);
 });
 
-test("reconcile: both modified text merges with snapshot.local base", async () => {
+test("reconcile: both modified text merges with snapshot base", async () => {
   const { stash } = await makeStash({}, { snapshotLocal: { "a.md": "hello world" } });
   const [mutation] = (stash as any).reconcile(
     makeChangeSet({ modified: { "a.md": { type: "text", content: "hello brave world" } } }),

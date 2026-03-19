@@ -58,7 +58,7 @@ Within one provider sync cycle, Stash does the following:
 9. Call `provider.push(payload)`.
 10. Apply local deletes first, then writes.
 11. Skip any local write whose target drifted after push but before apply.
-12. Save the local snapshot and snapshot-local text bases.
+12. Save the local snapshot and snapshot text bases.
 
 ## Retry Rules
 
@@ -107,7 +107,7 @@ This preserves newer local edits while still allowing later convergence.
 - Binary entries store `hash` plus `modified`.
 - The same snapshot is pushed to the remote and stored locally after a successful cycle.
 
-`.stash/snapshot.local/` stores the full text base for files that need later three-way merges. Binary files are not stored there.
+`.stash/snapshot/` stores the full text base for files that need later three-way merges. Binary files are not stored there.
 
 ## Push Ordering
 

@@ -1,12 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { UnsupportedPlatformError } from "@rupertsworld/daemon";
 import { main } from "../../src/cli-main.ts";
 import { Stash } from "../../src/stash.ts";
 import type { GlobalConfig } from "../../src/types.ts";
+import { assertMigration, writeLegacyLayout } from "../helpers/assert-migration.ts";
 
 type ServiceCalls = {
   install: number;
@@ -123,9 +124,7 @@ test("connect --background stores provider setup and registers the current direc
       "--background",
     ]);
 
-    const localConfig = JSON.parse(
-      await readFile(join(dir, ".stash", "config.local.json"), "utf8"),
-    );
+    const localConfig = JSON.parse(await readFile(join(dir, ".stash", "config.json"), "utf8"));
 
     assert.deepEqual(result.config, {
       providers: {
@@ -184,6 +183,67 @@ test("background status prints unsupported-platform service state and per-stash 
   }
 });
 
+test("background status shows the git safety error message", async () => {
+  const dir = await makeTempDir("stash-cli-background-git-error");
+
+  try {
+    await Stash.init(dir, { providers: {}, background: { stashes: [] } });
+    await writeFile(
+      join(dir, ".stash", "status.json"),
+      JSON.stringify(
+        {
+          kind: "error",
+          lastSync: null,
+          summary: null,
+          error: "git repository detected — run `stash config set allow-git true` to allow syncing",
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const result = await runMain(dir, ["background", "status"], {
+      config: {
+        providers: {},
+        background: {
+          stashes: [dir],
+        },
+      },
+      serviceStatus: new UnsupportedPlatformError(),
+    });
+
+    assert.equal(result.stdout.includes("git repository detected"), true);
+    assert.equal(result.stdout.includes("stash config set allow-git true"), true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("connect warns when git repository syncing is still blocked", async () => {
+  const dir = await makeTempDir("stash-cli-connect-git-warning");
+
+  try {
+    await mkdir(join(dir, ".git"), { recursive: true });
+
+    const result = await runMain(dir, [
+      "connect",
+      "github",
+      "--token",
+      "test-token",
+      "--repo",
+      "user/repo",
+    ]);
+
+    assert.equal(result.stdout.includes("Connected github."), true);
+    assert.equal(result.stdout.includes("Warning:"), true);
+    assert.equal(result.stdout.includes("remove .git"), true);
+    assert.equal(result.stdout.includes("stash config set allow-git true"), true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("background install delegates to the service module", async () => {
   const dir = await makeTempDir("stash-cli-background-install");
 
@@ -192,6 +252,27 @@ test("background install delegates to the service module", async () => {
 
     assert.equal(result.calls.install, 1);
     assert.equal(result.stdout.includes("Installed background service"), true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("background add migrates the legacy local stash layout", async () => {
+  const dir = await makeTempDir("stash-cli-background-migration");
+
+  try {
+    await writeLegacyLayout(dir, {
+      connections: {},
+      snapshotLocal: { "note.md": "base" },
+    });
+
+    const result = await runMain(dir, ["background", "add", dir]);
+
+    assert.deepEqual(result.config.background?.stashes, [resolve(dir)]);
+    await assertMigration(dir, {
+      connections: {},
+      snapshotLocal: { "note.md": "base" },
+    });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

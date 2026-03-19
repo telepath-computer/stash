@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync } from "node:fs";
-import { readFile, rename, unlink } from "node:fs/promises";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { hashBuffer } from "../../src/utils/hash.ts";
-import { PushConflictError, SyncLockError } from "../../src/errors.ts";
+import { GitRepoError, PushConflictError, SyncLockError } from "../../src/errors.ts";
 import { FakeProvider } from "../helpers/fake-provider.ts";
 import { makeStash, writeFiles } from "../helpers/make-stash.ts";
 
@@ -43,7 +43,7 @@ test("sync: first sync pushes all local files", async () => {
 
   const localSnapshot = JSON.parse(await readFile(join(dir, ".stash", "snapshot.json"), "utf8"));
   assert.deepEqual(localSnapshot, fake.snapshot);
-  assert.equal(await readFile(join(dir, ".stash", "snapshot.local", "hello.md"), "utf8"), "hello");
+  assert.equal(await readFile(join(dir, ".stash", "snapshot", "hello.md"), "utf8"), "hello");
 });
 
 test("sync: first sync pulls all remote files", async () => {
@@ -184,7 +184,7 @@ test("sync: single-flight guard rejects concurrent sync", async () => {
   await first;
 });
 
-test("sync: snapshot.local writes text files and skips binary files", async () => {
+test("sync: snapshot writes text files and skips binary files", async () => {
   const fake = new FakeProvider();
   const { stash, dir } = await makeStash(
     {
@@ -196,11 +196,11 @@ test("sync: snapshot.local writes text files and skips binary files", async () =
   await stash.connect("fake", { repo: "r" });
   await stash.sync();
 
-  assert.equal(await readFile(join(dir, ".stash", "snapshot.local", "text.md"), "utf8"), "hello");
-  assert.equal(existsSync(join(dir, ".stash", "snapshot.local", "img.bin")), false);
+  assert.equal(await readFile(join(dir, ".stash", "snapshot", "text.md"), "utf8"), "hello");
+  assert.equal(existsSync(join(dir, ".stash", "snapshot", "img.bin")), false);
 });
 
-test("sync: deleting a file removes it from snapshot.local", async () => {
+test("sync: deleting a file removes it from snapshot", async () => {
   const fake = new FakeProvider();
   const { stash, dir } = await makeStash(
     { "hello.md": "hello" },
@@ -208,11 +208,11 @@ test("sync: deleting a file removes it from snapshot.local", async () => {
   );
   await stash.connect("fake", { repo: "r" });
   await stash.sync();
-  assert.equal(existsSync(join(dir, ".stash", "snapshot.local", "hello.md")), true);
+  assert.equal(existsSync(join(dir, ".stash", "snapshot", "hello.md")), true);
 
   await unlink(join(dir, "hello.md"));
   await stash.sync();
-  assert.equal(existsSync(join(dir, ".stash", "snapshot.local", "hello.md")), false);
+  assert.equal(existsSync(join(dir, ".stash", "snapshot", "hello.md")), false);
 });
 
 test("sync: first sync with identical content on both sides skips file writes", async () => {
@@ -246,11 +246,43 @@ test("sync: first sync with identical content on both sides skips file writes", 
   assert.equal(localSnapshot["hello.md"]?.hash, hashBuffer(Buffer.from("hello", "utf8")));
   assert.equal(localSnapshot["notes/todo.md"]?.hash, hashBuffer(Buffer.from("buy milk", "utf8")));
 
-  assert.equal(await readFile(join(dir, ".stash", "snapshot.local", "hello.md"), "utf8"), "hello");
+  assert.equal(await readFile(join(dir, ".stash", "snapshot", "hello.md"), "utf8"), "hello");
   assert.equal(
-    await readFile(join(dir, ".stash", "snapshot.local", "notes/todo.md"), "utf8"),
+    await readFile(join(dir, ".stash", "snapshot", "notes/todo.md"), "utf8"),
     "buy milk",
   );
+});
+
+test("sync: git repository without allow-git throws", async () => {
+  const fake = new FakeProvider();
+  const { stash, dir } = await makeStash(
+    { "hello.md": "hello" },
+    { providers: fakeRegistry(fake) },
+  );
+  await stash.connect("fake", { repo: "r" });
+  await mkdir(join(dir, ".git"), { recursive: true });
+
+  await assert.rejects(stash.sync(), GitRepoError);
+  assert.equal(fake.fetchCalls, 0);
+  assert.equal(fake.pushCalls, 0);
+});
+
+test("sync: allow-git permits syncing inside a git repository", async () => {
+  const fake = new FakeProvider();
+  const { stash, dir } = await makeStash(
+    { "hello.md": "hello" },
+    { providers: fakeRegistry(fake) },
+  );
+  await stash.connect("fake", { repo: "r" });
+  await writeFile(
+    join(dir, ".stash", "config.json"),
+    JSON.stringify({ "allow-git": true, connections: { fake: { repo: "r" } } }, null, 2),
+    "utf8",
+  );
+  await mkdir(join(dir, ".git"), { recursive: true });
+
+  await stash.sync();
+  assert.equal(fake.files.get("hello.md"), "hello");
 });
 
 test("sync: skip/skip mutations with changed snapshot still pushes snapshot", async () => {

@@ -50,7 +50,7 @@ export async function makeStash(
 
   if (opts?.snapshotLocal) {
     for (const [path, content] of Object.entries(opts.snapshotLocal)) {
-      const target = join(dir, ".stash", "snapshot.local", path);
+      const target = join(dir, ".stash", "snapshot", path);
       await mkdir(join(target, ".."), { recursive: true });
       await writeFile(target, content, "utf8");
     }

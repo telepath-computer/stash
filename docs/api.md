@@ -10,7 +10,7 @@ The goal is to keep the surface area explicit and stable. If this contract chang
 export { Stash } from "./stash.ts";
 export type { StashEvents } from "./stash.ts";
 export { GitHubProvider } from "./providers/github-provider.ts";
-export { PushConflictError, SyncLockError } from "./errors.ts";
+export { GitRepoError, MigrationError, PushConflictError, SyncLockError } from "./errors.ts";
 export type { Disposable } from "./emitter.ts";
 export { getGlobalConfigPath, readGlobalConfig, writeGlobalConfig } from "./global-config.ts";
 export type {
@@ -91,7 +91,8 @@ Loads an existing stash rooted at `dir`.
 
 - Requires `.stash/` to already exist.
 - Throws if the directory is not already a stash.
-- Uses the provided `globalConfig` plus local `.stash/config.local.json`.
+- Runs local metadata migrations first when older prerelease stash layouts are detected.
+- Uses the provided `globalConfig` plus local `.stash/config.json`.
 - The current error guidance points callers toward `stash init` or `stash connect <provider>`.
 
 ### `Stash.init()`
@@ -99,8 +100,9 @@ Loads an existing stash rooted at `dir`.
 Ensures `.stash/` exists in `dir` and returns a loaded `Stash`.
 
 - Creates `.stash/`
-- Creates `.stash/snapshot.local/`
-- Creates `.stash/config.local.json` if missing
+- Runs local metadata migrations first when older prerelease stash layouts are detected
+- Creates `.stash/snapshot/`
+- Creates `.stash/config.json` if missing
 - Does not remove or move user files
 - Is safe to call repeatedly
 
@@ -119,11 +121,11 @@ This is useful for code that needs the effective provider configuration, not jus
 
 ### `connect(provider, fields)`
 
-Stores connection config for a provider in `.stash/config.local.json`.
+Stores connection config for a provider in `.stash/config.json`.
 
 ### `disconnect(provider)`
 
-Removes connection config for a provider from `.stash/config.local.json`.
+Removes connection config for a provider from `.stash/config.json`.
 
 ### `sync()`
 
@@ -134,6 +136,7 @@ Behavioral contract:
 - no configured connections -> no-op
 - one active sync at a time per `Stash` instance
 - cross-process lock enforced through `.stash/sync.lock`
+- may throw `GitRepoError`
 - may throw `SyncLockError`
 - may throw `PushConflictError` only indirectly through retry exhaustion logic or provider failures
 - emits `mutation` events as disk mutations are applied
@@ -275,7 +278,6 @@ interface PushPayload {
   deletions: string[];
   snapshot: Record<string, SnapshotEntry>;
 }
-
 ```
 
 ## Error Types
@@ -284,9 +286,13 @@ The package exports:
 
 ```ts
 class PushConflictError extends Error {}
+class MigrationError extends Error {}
+class GitRepoError extends Error {}
 class SyncLockError extends Error {}
 ```
 
+- `MigrationError` means stash detected an on-disk local metadata conflict during startup migration and could not safely continue.
+- `GitRepoError` means sync was blocked because the stash directory contains `.git/` and local config does not have `allow-git: true`.
 - `SyncLockError` means a sync could not start because another sync is already active.
 - `PushConflictError` represents a remote ref race detected by a provider push.
 

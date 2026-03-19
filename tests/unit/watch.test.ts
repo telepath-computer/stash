@@ -1,9 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { Emitter } from "../../src/emitter.ts";
-import { Watch, type WatchStatus } from "../../src/watch.ts";
+import { watch, Watch, type WatchStatus } from "../../src/watch.ts";
+import { makeStash } from "../helpers/make-stash.ts";
+import { FakeProvider } from "../helpers/fake-provider.ts";
 import type { FileMutation } from "../../src/types.ts";
 
 class FakeStash extends Emitter<{ mutation: FileMutation }> {
@@ -15,6 +19,32 @@ class FakeStash extends Emitter<{ mutation: FileMutation }> {
     this.syncCalls += 1;
     await this.runSync(this.syncCalls, this);
   }
+}
+
+class FakeInput extends EventEmitter {
+  isTTY = true;
+  resume(): void {}
+  setRawMode(): void {}
+}
+
+class FakeOutput {
+  isTTY = true;
+  output = "";
+  write(chunk: string): boolean {
+    this.output += chunk;
+    return true;
+  }
+}
+
+function fakeRegistry(fake: FakeProvider) {
+  class TestProvider {
+    static spec = { setup: [], connect: [{ name: "repo", label: "Repo" }] };
+    constructor() {
+      return fake;
+    }
+  }
+
+  return { fake: TestProvider as any };
 }
 
 test("watch: performs an initial check even when no providers are connected", async () => {
@@ -152,4 +182,34 @@ test("watch: falls back to poll-only when subscribe throws", async () => {
   assert.ok(stash.syncCalls >= 2, "poll timer should trigger additional syncs");
 
   await watch.stop();
+});
+
+test("watch: git safety error is rendered with retry guidance", async () => {
+  const fake = new FakeProvider();
+  const { stash, dir } = await makeStash(
+    { "hello.md": "hello" },
+    { providers: fakeRegistry(fake) },
+  );
+  await stash.connect("fake", { repo: "r" });
+  const stdin = new FakeInput();
+  const stdout = new FakeOutput();
+
+  await mkdir(join(dir, ".git"), { recursive: true });
+
+  const watchPromise = watch(stash, {
+    dir,
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    stdout: stdout as unknown as NodeJS.WriteStream,
+    pollMs: 50,
+    subscribe: async () => ({
+      unsubscribe: async () => {},
+    }),
+  });
+
+  await delay(60);
+  stdin.emit("data", Buffer.from("q"));
+  await watchPromise;
+
+  assert.equal(stdout.output.includes("git repository detected"), true);
+  assert.equal(stdout.output.includes("retrying in"), true);
 });

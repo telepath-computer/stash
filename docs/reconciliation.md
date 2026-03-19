@@ -64,7 +64,7 @@ type FileState =
 
 Text merge uses `diff-match-patch`.
 
-- If a snapshot base exists in `.stash/snapshot.local/`, Stash performs a three-way merge.
+- If a snapshot base exists in `.stash/snapshot/`, Stash performs a three-way merge.
 - If there is no snapshot base yet, Stash performs a two-way merge for first-sync behavior.
 - If the merged content already matches one side exactly, that side's write is skipped.
 

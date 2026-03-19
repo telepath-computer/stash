@@ -42,20 +42,20 @@ Local metadata lives in `.stash/` inside the synced directory:
 
 ```text
 .stash/
-  config.local.json
+  config.json
   snapshot.json
   status.json
   sync.log
   sync.lock
-  snapshot.local/
+  snapshot/
 ```
 
-- `config.local.json` stores per-directory provider connection settings.
+- `config.json` stores per-directory config such as provider connections and safety flags.
 - `snapshot.json` stores the last synchronized hash state and is the only `.stash/` file pushed to the remote.
 - `status.json` stores the latest background watch result for `stash background status`.
 - `sync.log` stores capped per-stash background sync logs.
 - `sync.lock` is local-only and exists only while a sync is active.
-- `snapshot.local/` stores text merge bases for later three-way merges.
+- `snapshot/` stores text merge bases for later three-way merges.
 
 Everything in `.stash/` is local-only except `snapshot.json`.
 

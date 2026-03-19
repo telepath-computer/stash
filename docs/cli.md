@@ -41,9 +41,29 @@ If global setup fields are missing, `connect` collects and writes them before st
 
 If `--background` is supplied, the CLI also registers the current stash in the global background registry after connecting.
 
+If the directory contains `.git/` and per-stash config does not have `allow-git: true`, `connect` still succeeds but prints a warning explaining that sync is blocked until the user either removes `.git/` or runs `stash config set allow-git true`.
+
 ### `stash disconnect <provider>`
 
-Removes the provider connection from `.stash/config.local.json`.
+Removes the provider connection from `.stash/config.json`.
+
+### `stash config set <key> <value>`
+
+Writes one per-stash config value into `.stash/config.json`.
+
+Current supported keys:
+
+- `allow-git`
+
+Rules:
+
+- unknown keys fail
+- `true` and `false` are stored as JSON booleans
+- the current directory must already be a stash
+
+### `stash config get <key>`
+
+Prints one per-stash config value from `.stash/config.json`.
 
 ### `stash sync`
 
@@ -71,6 +91,12 @@ If sync fails:
 ✗ sync failed: network error
 ```
 
+If sync is blocked by git safety:
+
+```text
+✗ sync failed: git repository detected — run `stash config set allow-git true` to allow syncing
+```
+
 ### `stash watch`
 
 Continuously syncs until interrupted.
@@ -91,6 +117,8 @@ Additional behavior worth preserving:
 - in non-TTY mode, watch prints line-based results instead of updating one live line
 - sync and watcher errors do not stop watch; it keeps retrying on the normal poll cadence
 - filesystem events that arrive during a sync are queued and trigger a follow-up debounced sync
+
+If sync is blocked by git safety, watch shows the same error message and keeps retrying on the normal poll cadence until the user removes `.git/` or sets `allow-git`.
 
 If no provider is connected, watch exits with:
 
@@ -153,7 +181,7 @@ Hidden daemon entrypoint used by the OS service.
 ## Config Locations
 
 - Global config: `~/.stash/config.json` or `$XDG_CONFIG_HOME/stash/config.json`
-- Per-stash config: `.stash/config.local.json`
+- Per-stash config: `.stash/config.json`
 
 Global config shape:
 

@@ -13,6 +13,8 @@ import {
   setProviderConfig,
   writeGlobalConfig,
 } from "./global-config.ts";
+import type { LocalConfig } from "./local-config.ts";
+import { readLocalConfig, writeLocalConfig } from "./local-config.ts";
 import { runDaemon } from "./daemon.ts";
 import { providers } from "./providers/index.ts";
 import { Stash } from "./stash.ts";
@@ -48,6 +50,12 @@ type PersistedBackgroundStatus = {
   summary?: string | null;
   error?: string | null;
 };
+
+const STASH_CONFIG_KEYS = new Set(["allow-git"]);
+
+function isStashConfigKey(key: string): key is "allow-git" {
+  return STASH_CONFIG_KEYS.has(key);
+}
 
 function getProvider(name: string): ProviderClass {
   const provider = providers[name];
@@ -155,6 +163,40 @@ async function warnIfServiceUnavailable(
   }
 }
 
+function renderGitWarning(stdout: NodeJS.WriteStream): void {
+  const { dim, yellow } = createColors(stdout);
+  writeLine(
+    stdout,
+    `${yellow("Warning:")} ${dim("This directory contains .git. Stash will not sync until you either:")}`,
+  );
+  writeLine(stdout, dim("  - remove .git, or"));
+  writeLine(
+    stdout,
+    dim('  - run `stash config set allow-git true` (see "Using stash with git" in the README)'),
+  );
+}
+
+async function warnIfGitSyncBlocked(dir: string, stdout: NodeJS.WriteStream): Promise<void> {
+  if (!existsSync(join(dir, ".git"))) {
+    return;
+  }
+  const localConfig = await readLocalConfig(dir);
+  if (localConfig["allow-git"] === true) {
+    return;
+  }
+  renderGitWarning(stdout);
+}
+
+function parseConfigValue(key: "allow-git", value: string): boolean {
+  if (value === "true") {
+    return true;
+  }
+  if (value === "false") {
+    return false;
+  }
+  throw new Error(`Invalid value for ${key}: expected true or false`);
+}
+
 async function runSetup(
   providerName: string,
   valuesFromCli: Record<string, string | boolean | undefined>,
@@ -235,6 +277,7 @@ async function runConnect(
   }
 
   writeLine(stdout, `Connected ${providerName}.`);
+  await warnIfGitSyncBlocked(dir, stdout);
 }
 
 async function runDisconnect(
@@ -285,7 +328,11 @@ async function runWatch(cwd: () => string, readConfig: () => Promise<GlobalConfi
   await watchStash(stash, { dir, stdin: process.stdin, stdout: process.stdout });
 }
 
-function formatChangeParts(status: { added: string[]; modified: string[]; deleted: string[] }): string[] {
+function formatChangeParts(status: {
+  added: string[];
+  modified: string[];
+  deleted: string[];
+}): string[] {
   const parts: string[] = [];
   if (status.added.length > 0) parts.push(`${status.added.length} added`);
   if (status.modified.length > 0) parts.push(`${status.modified.length} modified`);
@@ -390,11 +437,15 @@ async function runBackgroundStatus(
     } else if (current.running) {
       serviceRunning = true;
     } else {
-      serviceMessage = red("background service is stopped — run `stash background install` to restart");
+      serviceMessage = red(
+        "background service is stopped — run `stash background install` to restart",
+      );
     }
   } catch (error) {
     if (isUnsupportedPlatformError(error)) {
-      serviceMessage = dim("service install not supported on this platform — run `stash background watch` manually");
+      serviceMessage = dim(
+        "service install not supported on this platform — run `stash background watch` manually",
+      );
     } else {
       throw error;
     }
@@ -433,7 +484,10 @@ async function runBackgroundStatus(
       writeLine(stdout, `${red("✗")} ${dir}`);
       const ago = status.lastSync ? formatTimeAgo(new Date(status.lastSync)) : null;
       const errorMsg = status.error ?? "unknown error";
-      writeLine(stdout, ago ? `  ${red(errorMsg)} ${dim("·")} ${dim(`synced ${ago}`)}` : `  ${red(errorMsg)}`);
+      writeLine(
+        stdout,
+        ago ? `  ${red(errorMsg)} ${dim("·")} ${dim(`synced ${ago}`)}` : `  ${red(errorMsg)}`,
+      );
       continue;
     }
 
@@ -446,7 +500,50 @@ async function runBackgroundStatus(
       writeLine(stdout, dim(`  up to date · synced ${ago ?? "unknown"}`));
     }
   }
+}
 
+async function ensureInitializedStash(
+  cwd: () => string,
+  readConfig: () => Promise<GlobalConfig>,
+): Promise<string> {
+  const dir = cwd();
+  await Stash.load(dir, await readConfig());
+  return dir;
+}
+
+async function runConfigSet(
+  key: string,
+  value: string,
+  cwd: () => string,
+  readConfig: () => Promise<GlobalConfig>,
+  stdout: NodeJS.WriteStream,
+): Promise<void> {
+  if (!isStashConfigKey(key)) {
+    throw new Error(`Unknown config key: ${key}`);
+  }
+  const dir = await ensureInitializedStash(cwd, readConfig);
+  const currentConfig = await readLocalConfig(dir);
+  const nextConfig: LocalConfig = {
+    ...currentConfig,
+    [key]: parseConfigValue(key, value),
+  };
+  await writeLocalConfig(dir, nextConfig);
+  writeLine(stdout, `${key}=${String(nextConfig[key])}`);
+}
+
+async function runConfigGet(
+  key: string,
+  cwd: () => string,
+  readConfig: () => Promise<GlobalConfig>,
+  stdout: NodeJS.WriteStream,
+): Promise<void> {
+  if (!isStashConfigKey(key)) {
+    throw new Error(`Unknown config key: ${key}`);
+  }
+  const dir = await ensureInitializedStash(cwd, readConfig);
+  const localConfig = await readLocalConfig(dir);
+  const value = localConfig[key];
+  writeLine(stdout, value === undefined ? "" : String(value));
 }
 
 function addFieldOptions(command: Command, fields: Field[]): void {
@@ -552,6 +649,21 @@ export async function main(argv = process.argv, deps: CliDependencies = {}): Pro
     .command("status")
     .description("Show local stash status")
     .action(() => runStatus(cwd, readConfig, stdout));
+
+  const configCommand = program.command("config").description("Manage stash config");
+
+  configCommand
+    .command("set")
+    .description("Set a stash config value")
+    .argument("<key>", "Config key")
+    .argument("<value>", "Config value")
+    .action((key: string, value: string) => runConfigSet(key, value, cwd, readConfig, stdout));
+
+  configCommand
+    .command("get")
+    .description("Get a stash config value")
+    .argument("<key>", "Config key")
+    .action((key: string) => runConfigGet(key, cwd, readConfig, stdout));
 
   const backgroundCommand = program.command("background").description("Manage background syncing");
 
