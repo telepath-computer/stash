@@ -38,6 +38,12 @@ jobs:
             echo "Using explicit version: $VERSION"
           fi
 
+          PUBLISHED=$(npm view @telepath-computer/stash@$VERSION version 2>/dev/null || echo "")
+          if [ "$PUBLISHED" = "$VERSION" ]; then
+            echo "Version $VERSION already published — skipping"
+            exit 0
+          fi
+
           npm publish
 
           git config user.name "github-actions[bot]"
