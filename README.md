@@ -3,7 +3,7 @@
 [![npm](https://img.shields.io/npm/v/@telepath-computer/stash)](https://www.npmjs.com/package/@telepath-computer/stash)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-**Conflict-free synced folders.** Multiple people, agents, and machines can edit the same directory, then converge with a single `stash sync`.
+**Sync any folder anywhere, conflict-free.** Keep your AI tools, skills, and documents in sync across machines, agents, and collaborators — backed by a GitHub repo you already own.
 
 [Read the launch post →](https://telepath.computer/blog/stash/)
 
