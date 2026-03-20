@@ -478,6 +478,7 @@ async function runStatusAll(
       writeLine(stdout, `${red("✗")} ${title}`);
       writeLine(stdout, dim(`  ${dir}`));
       writeLine(stdout, dim("  Directory not found"));
+      writeLine(stdout, "");
       continue;
     }
 
@@ -485,6 +486,7 @@ async function runStatusAll(
       writeLine(stdout, `${red("✗")} ${title}`);
       writeLine(stdout, dim(`  ${dir}`));
       writeLine(stdout, dim("  Not a stash"));
+      writeLine(stdout, "");
       continue;
     }
 
@@ -503,6 +505,7 @@ async function runStatusAll(
           `  ${formatConnectionLabel(connectionName, connection.provider)} ${dim("·")} ${red(persistedStatus.error ?? "unknown error")}`,
         );
       }
+      writeLine(stdout, "");
       continue;
     }
 
@@ -524,6 +527,7 @@ async function runStatusAll(
         `  ${formatConnectionLabel(connectionName, connection.provider)} ${dim("·")} ${dim(formatConnectionSummary(localStatus))}`,
       );
     }
+    writeLine(stdout, "");
   }
 }
 
