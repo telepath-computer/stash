@@ -91,6 +91,8 @@ If you don't need git in that directory, remove `.git/`. If you intentionally wa
 stash config set allow-git true
 ```
 
+One possible approach: use **git only locally** (commits, branches, history on your machine). When you want GitHub’s **`main`** updated for this folder, use **`stash sync`** — not `git push` / merges to `main`. Stash always targets `main` and does not read git’s branch or index. Git-only changes on `main` can leave `.stash/snapshot.json` wrong, break sync (see [issue #8](https://github.com/telepath-computer/stash/issues/8)), or bring deleted files back on the next Stash sync.
+
 Keep stash pinned to one branch and don't switch branches while it's active. Behaviour in that configuration is undefined — make a backup.
 
 ## FAQ
@@ -101,7 +103,7 @@ Not blindly. On first sync, local and remote content are reconciled rather than 
 
 **Can I use the same repo with both stash and git?**
 
-Yes, but not on the same machine and directory. Stash syncs the working tree directly to `main` through the GitHub API and does not understand local git state.
+Yes, sort of. Details and caveats are in [Using stash with git](#using-stash-with-git).
 
 **Does stash use branches or PRs?**
 
