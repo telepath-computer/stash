@@ -24,7 +24,7 @@ cd dir-to-sync/
 stash connect github
 ```
 
-Follow the propmts to enter your repo & GitHub token (see below).
+Follow the prompts to enter your repo & GitHub token (see below).
 
 Then, start syncing!
 
