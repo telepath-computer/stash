@@ -7,8 +7,10 @@ Pushing to `main` triggers the publish workflow (`.github/workflows/publish.yml`
 1. Compares the version in `package.json` to the previous commit's version.
 2. If they are the same (or the previous version is missing), auto-bumps the patch version.
 3. If they differ, uses the version already in `package.json` as-is.
-4. Publishes to npm.
+4. Publishes to npm via [trusted publishing](https://docs.npmjs.com/trusted-publishers) (OIDC from GitHub Actions — no npm token secret).
 5. Commits the final version back to `main` as a `[skip ci]` bump commit.
+
+The workflow still needs a **`PAT` repository secret** so checkout and the post-publish `git push` can run (e.g. past branch protection).
 
 In practice: bump the version manually before pushing if you want a minor or major release; otherwise CI will cut a patch release automatically.
 

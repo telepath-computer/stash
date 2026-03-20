@@ -9,6 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -20,11 +21,11 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
+      - run: npm install -g npm@^11.5.1
+
       - run: npm ci
 
       - name: Determine version and publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           LOCAL_VERSION=$(node -p "require('./package.json').version")
           PREV_VERSION=$(git show HEAD~1:package.json 2>/dev/null | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).version" 2>/dev/null || echo "")
