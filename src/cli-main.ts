@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { access, constants, readFile, rm } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { basename, delimiter, join, resolve } from "node:path";
 import { Daemon, UnsupportedPlatformError } from "@rupertsworld/daemon";
 import { Command, Option } from "commander";
@@ -722,9 +723,12 @@ export async function main(argv = process.argv, deps: CliDependencies = {}): Pro
     }
   }
 
+  const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
+
   const program = new Command()
     .name("stash")
     .description("Conflict-free synced folders")
+    .version(version, "-v, --version")
     .showHelpAfterError()
     .configureOutput({
       writeOut: (text) => {
