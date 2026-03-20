@@ -120,10 +120,4 @@ That ordering matters:
 
 ## Provider Contract
 
-Providers are expected to:
-
-- `fetch(localSnapshot)` - return remote changes since the last synchronized snapshot
-- `get(path)` - stream a remote binary file
-- `push(payload)` - apply remote writes, deletions, and the new snapshot atomically enough to detect ref conflicts
-
-See `docs/providers/github.md` for the concrete GitHub behavior.
+See `docs/providers/overview.md` for the full provider contract and how to build a custom provider. See `docs/providers/github.md` for the concrete GitHub behavior.

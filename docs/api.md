@@ -190,68 +190,9 @@ interface GlobalConfig {
 
 ## Provider Contract
 
-Providers are transport interfaces used by `Stash`.
+See `docs/providers/overview.md` for the full provider contract, data types, and how to build a custom provider.
 
-```ts
-interface Provider {
-  fetch(localSnapshot?: Record<string, SnapshotEntry>): Promise<ChangeSet>;
-  get(path: string): Promise<Readable>;
-  push(payload: PushPayload): Promise<void>;
-}
-```
-
-### `fetch(localSnapshot)`
-
-Returns the remote-side `ChangeSet` relative to the local snapshot.
-
-### `get(path)`
-
-Returns a readable stream for a remote binary file when local apply needs the remote bytes.
-
-### `push(payload)`
-
-Writes remote changes for one sync cycle.
-
-## Provider Declaration Types
-
-```ts
-interface ProviderSpec {
-  setup: Field[];
-  connect: Field[];
-}
-
-interface Field {
-  name: string;
-  label: string;
-  secret?: boolean;
-}
-
-type ProviderClass = {
-  spec: ProviderSpec;
-  new (config: Record<string, string>): Provider;
-};
-```
-
-Providers expose:
-
-- setup fields used by `stash setup`
-- connect fields used by `stash connect`
-- a constructor that accepts the merged config object
-
-## Built-In Provider
-
-The package exports `GitHubProvider` as the built-in provider implementation.
-
-Its static provider declaration is:
-
-```ts
-GitHubProvider.spec = {
-  setup: [{ name: "token", label: "Personal access token", secret: true }],
-  connect: [{ name: "repo", label: "Repository (user/repo)" }],
-};
-```
-
-See `docs/providers/github.md` for its behavioral contract.
+The package exports `GitHubProvider` as the built-in implementation. See `docs/providers/github.md` for its behavioral contract.
 
 ## Important Data Types
 
