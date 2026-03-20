@@ -204,7 +204,8 @@ test("connecting a second named connection is rejected", async () => {
       },
     ).catch((e: Error) => e);
     assert.ok(error instanceof Error);
-    assert.equal(error.message.includes("multiple connections are not yet supported"), true);
+    assert.equal(error.message.includes('already has connection "origin"'), true);
+    assert.equal(error.message.includes("stash disconnect origin"), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

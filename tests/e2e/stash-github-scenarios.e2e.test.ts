@@ -323,7 +323,7 @@ test("scenario 1: connect auto-inits stash and keeps existing files", E2E_OPTION
 });
 
 test(
-  "scenario 2: adding another named connection does not duplicate registry entries",
+  "scenario 2: second named connection is rejected and global registry stays unchanged",
   E2E_OPTIONS,
   async () => {
     const dir = await makeTempDir("connect-reregister");
@@ -336,12 +336,24 @@ test(
           XDG_CONFIG_HOME: xdg,
         },
       );
-      await runCli(dir, ["connect", "github", "backup", "--repo", "user/repo"], {
-        XDG_CONFIG_HOME: xdg,
-      });
+      const second = await execFileAsync(
+        "node",
+        [CLI_PATH, "connect", "github", "backup", "--repo", "user/repo"],
+        {
+          cwd: dir,
+          env: { ...process.env, XDG_CONFIG_HOME: xdg },
+        },
+      ).catch((error) => error as { stdout: string; stderr: string; code: number });
+
+      assert.equal(second.code, 1);
+      const combined = `${second.stdout ?? ""}${second.stderr ?? ""}`;
+      assert.equal(combined.includes('already has connection "origin"'), true);
+      assert.equal(combined.includes("stash disconnect origin"), true);
 
       const globalConfig = JSON.parse(await readFile(join(xdg, "stash", "config.json"), "utf8"));
       assert.deepEqual(globalConfig.background?.stashes, [await realpath(dir)]);
+      const localConfig = JSON.parse(await readFile(join(dir, ".stash", "config.json"), "utf8"));
+      assert.deepEqual(Object.keys(localConfig.connections ?? {}), ["origin"]);
     } finally {
       await rm(dir, { recursive: true, force: true });
       await rm(xdg, { recursive: true, force: true });
@@ -579,6 +591,8 @@ test(
       repo = await createRepo();
       await upsertRemoteFile(repo.fullName, "shared.md", "remote content");
       assert.equal(await remoteFileExistsRetry(repo.fullName, "shared.md"), true);
+      // GitHub occasionally serves new blobs slightly late; avoid flaky first pull.
+      await sleep(2_000);
 
       const machine = await makeTempDir("machine");
       dirs.push(machine);
@@ -594,7 +608,18 @@ test(
       await stash.connect({ name: "github", provider: "github", repo: repo.fullName });
       await syncWithRetry(stash);
 
-      assert.equal(await readFile(join(machine, "shared.md"), "utf8"), "remote content");
+      let sharedLocal = "";
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        if (existsSync(join(machine, "shared.md"))) {
+          sharedLocal = await readFile(join(machine, "shared.md"), "utf8");
+          if (sharedLocal === "remote content") {
+            break;
+          }
+        }
+        await sleep(500);
+        await syncWithRetry(stash);
+      }
+      assert.equal(sharedLocal, "remote content");
       assert.equal(await readFile(join(machine, "local.md"), "utf8"), "local content");
       assert.equal(await remoteFileExists(repo.fullName, "shared.md"), true);
       assert.equal(await remoteFileExists(repo.fullName, "local.md"), true);
@@ -631,8 +656,15 @@ test("scenario 11: remote edit with unchanged local pulls remote", E2E_OPTIONS, 
     setup = await setupTwoMachineBaseline({ "hello.md": "hello" });
     await writeFile(join(setup.machineA.dir, "hello.md"), "hello world", "utf8");
     await syncWithRetry(setup.machineA.stash);
+    await sleep(1_000);
     await syncWithRetry(setup.machineB.stash);
-    assert.equal(await readFile(join(setup.machineB.dir, "hello.md"), "utf8"), "hello world");
+    let helloB = await readFile(join(setup.machineB.dir, "hello.md"), "utf8");
+    if (helloB !== "hello world") {
+      await sleep(1_000);
+      await syncWithRetry(setup.machineB.stash);
+      helloB = await readFile(join(setup.machineB.dir, "hello.md"), "utf8");
+    }
+    assert.equal(helloB, "hello world");
   } finally {
     if (setup) {
       await deleteRepo(setup.repo.fullName);

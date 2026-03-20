@@ -44,15 +44,37 @@ Connected origin.
 Background sync is on · This stash is now syncing automatically
 ```
 
-Connection names are unique within a stash. If the resolved name already exists, the command fails.
+**TTY colors (stdout):** `Connected origin.` is default foreground. On the second line, `Background sync is on` is **green**; the middle dot `·` and `This stash is now syncing automatically` are **dim**. **Non-TTY:** same characters, no ANSI codes.
 
-If the directory contains `.git/` and per-stash config does not have `allow-git: true`, `connect` still succeeds but prints a warning explaining that sync is blocked until the user either removes `.git/` or runs `stash config set allow-git true`.
+Connection names are unique within a stash, and **only one connection per stash** is allowed (see [Output examples and TTY colors](#output-examples-and-tty-colors)).
+
+If the directory contains `.git/` and per-stash config does not have `allow-git: true`, `connect` still succeeds but prints a warning — see [Git safety warning on `connect`](#git-safety-warning-on-connect).
 
 ### `stash disconnect <name>`
 
 Disconnects one named connection from the current stash.
 
 If that was the last remaining connection, the CLI also removes the stash from the global background registry and deletes `.stash/`.
+
+Example **stdout** (one connection removed, others remain):
+
+```text
+Disconnected origin.
+```
+
+Example **stdout** (last connection — same message as `--all` after teardown):
+
+```text
+Disconnected stash.
+```
+
+Unknown name exits with code `1` and **stderr**:
+
+```text
+Connection not found: backup
+```
+
+**TTY:** default foreground (no color) for these disconnect messages.
 
 ### `stash disconnect --all`
 
@@ -88,9 +110,25 @@ Rules:
 - `true` and `false` are stored as JSON booleans
 - the current directory must already be a stash
 
+Example **stdout**:
+
+```text
+allow-git=true
+```
+
+**TTY:** default foreground.
+
 ### `stash config get <key>`
 
 Prints one per-stash config value from `.stash/config.json`.
+
+Example **stdout** when set:
+
+```text
+true
+```
+
+When the key is unset, prints an empty line (still **stdout**). **TTY:** default foreground.
 
 ### `stash start`
 
@@ -108,6 +146,24 @@ Background sync is on
 Watching 3 stashes · starts on startup
 ```
 
+**TTY:** first line **green**; second line entirely **dim**.
+
+If the service is already installed and running:
+
+```text
+Background sync is already running
+```
+
+**TTY:** entire line **green**.
+
+On an unsupported platform, `stash start` prints to **stdout** and sets exit code `1`:
+
+```text
+Background sync is not supported on this platform
+```
+
+**TTY:** entire line **red**.
+
 ### `stash stop`
 
 Stops and uninstalls the OS-managed background sync service for the current user.
@@ -119,31 +175,45 @@ Background sync is off
 Run `stash start` to resume syncing 3 stashes
 ```
 
+**TTY:** first line **red**; second line **dim**.
+
+If the service is not installed and not running:
+
+```text
+Background sync is not running
+```
+
+**TTY:** entire line **red** (also used when the platform does not support background sync).
+
 ### `stash sync`
 
 Runs one sync cycle.
 
-TTY output uses a live status line:
+On a **TTY**, a single live line is updated. Spinner frames are `◐`, `◓`, `◑`, `◒` in **yellow**, followed by the rest of the line (lowercase status text).
+
+Example progression:
 
 ```text
-◐ Checking...
-◐ Syncing... ↑ hello.md
-◐ Syncing... ↓ photo.jpg
+◐ checking...
+◐ syncing... ↑ hello.md
+◐ syncing... ↓ photo.jpg
 ✓ synced (1↑ 1↓)
 ```
 
 If there are no changes:
 
 ```text
-◐ Checking...
+◐ checking...
 ✓ up to date
 ```
 
 If sync fails:
 
 ```text
-✗ Sync failed: network error
+✗ sync failed: network error
 ```
+
+**TTY:** `✗` is **red**; `sync failed:` and the message use the default foreground.
 
 If sync is blocked by git safety:
 
@@ -177,31 +247,53 @@ If sync is blocked by git safety, watch shows the same error message and keeps r
 If no provider is connected, watch exits with:
 
 ```text
-No connection configured — run `stash connect <provider> <name>` first
+no connection configured — run `stash connect <provider> <name>` first
 ```
+
+(Exact casing matches the CLI.)
+
+**TTY** watch mode (live line, examples):
+
+```text
+● up to date · checking in 8s
+```
+
+**TTY colors:** `●` **green**; `up to date`, the middle dot, and `checking in 8s` are **dim**.
+
+After a sync that applied changes:
+
+```text
+● 2↑ 1↓ · checking in 10s
+```
+
+**TTY:** `●` **green**; the summary (`2↑ 1↓`) is **default** foreground; `·` and countdown are **dim**.
+
+When a sync errors but watch keeps retrying:
+
+```text
+✗ sync failed: <message> · retrying in 10s
+```
+
+**TTY:** `✗` **red**; `sync failed:` and `<message>` default foreground; ` · retrying in …` **dim**.
+
+**Non-TTY** (piped stdout), error status prints one line:
+
+```text
+✗ sync failed: <message>
+```
+
+**TTY:** `✗` **red**; remainder default.
 
 ### `stash status`
 
-Prints local status for the current stash.
-
-If the current stash is registered for background sync, the CLI prints the background sync state first, followed by a blank line, then named connections with their provider type plus local `added`, `modified`, `deleted`, and `lastSync` status based on disk versus `snapshot.json`.
-
-If run outside a stash directory:
-
-```text
-Not in a stash directory — run `stash status --all` to view all stashes
-```
-
-### `stash status --all`
-
-Prints global background sync status plus all registered stashes.
+Prints **global** background sync state, then every stash path registered for background sync (from `~/.stash/config.json` or `$XDG_CONFIG_HOME/stash/config.json`). The current working directory does not matter.
 
 It shows:
 
-- whether background sync is running
-- each registered stash basename and path
-- each connection name plus provider type
-- local pending changes and last sync time, or the current background error
+- whether background sync is running and how many stashes are registered
+- a blank line, then for each registered path: basename, full path, and each connection’s provider label
+- local pending changes and last sync time (from disk vs `snapshot.json`), or a background error when the daemon reported failure
+- `Directory not found` / `Not a stash` when a registered path is missing or no longer a stash
 
 Example output:
 
@@ -215,7 +307,47 @@ Background sync is on · watching 2 stashes
 ● work
   /Users/me/work
   origin (github) · Local changes: 1 added, 2 modified · synced 5m ago
+
 ```
+
+**TTY colors:** On the banner line, `Background sync is on` is **green**; `·` and `watching 2 stashes` are **dim**. For each healthy stash, `●` is **green**; the stash title (e.g. `notes`) is default; the path on the next line is **dim**. On connection lines, `origin (github)` is default; `·` and the status phrase (`Up to date · synced 2m ago`, etc.) are **dim**.
+
+When background sync is off:
+
+```text
+Background sync is off
+Run `stash start` to resume syncing 2 stashes
+
+```
+
+**TTY:** first line **red**; second line **dim**.
+
+When the platform does not support background sync:
+
+```text
+Background sync is not supported on this platform
+
+```
+
+**TTY:** entire line **red**.
+
+When no stashes are registered:
+
+```text
+No stashes connected yet — run `stash connect <provider> <name>` in a directory to get started
+```
+
+**TTY:** default foreground.
+
+When the daemon reported an error for a stash (example):
+
+```text
+✗ notes
+  /Users/me/notes
+  origin (github) · rate limited
+```
+
+**TTY:** `✗` **red**; title default; path **dim**; `origin (github)` default; `·` **dim**; error text **red**.
 
 ### Hidden: `stash daemon`
 
@@ -244,20 +376,93 @@ Global config shape:
 }
 ```
 
+## Output examples and TTY colors
+
+This section is the **canonical reference** for exact user-visible text and **TTY** color. When stdout/stderr is **not** a TTY (pipe, file, CI), stash prints the **same words and punctuation** but **omits ANSI color codes**.
+
+### How to read the examples
+
+- **stdout** / **stderr** are called out per case. Most errors go to **stderr** (including all structured `stash connect` validation errors).
+- **“Green / red / dim / yellow”** describe the ANSI foreground stash uses when the stream is a TTY (`createColors` in `src/ui/color.ts`).
+- **“Default”** means the terminal’s normal text color (stash does not wrap that segment in a color code).
+
+### Color roles (quick reference)
+
+| Color       | Typical use                                                                                                                                       |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Green**   | `✓`, healthy `●`, positive service lines (`Background sync is on`, `Background sync is already running`), synced summary in watch                 |
+| **Red**     | `✗`, service “off / not running / unsupported”, daemon error text in `stash status`, **first line** of structured `stash connect` errors          |
+| **Dim**     | Paths, hints, `·` separators, countdowns, **continuation lines** after a red `connect` error, git-warning bullets, second lines of `start`/`stop` |
+| **Yellow**  | Spinner frame characters `◐ ◓ ◑ ◒`; the `Warning:` prefix on git safety                                                                           |
+| **Default** | Plain sentences such as `Connected origin.`, `Disconnected origin.`, `stash sync`’s `sync failed:` tail                                           |
+
+### `stash connect` — validation errors (stderr)
+
+Emitted **before** any connect prompts when the command cannot succeed.
+
+**Duplicate name** (name already in `.stash/config.json`):
+
+```text
+Connection already exists: origin
+```
+
+**TTY:** entire line **red** (via `CliDisplayError`). **Non-TTY:** same text, no codes.
+
+**Second connection name** (e.g. `stash connect github new` while `origin` already exists):
+
+```text
+This stash already has connection "origin" (only one is supported).
+Disconnect it before adding "new":
+  stash disconnect origin
+```
+
+**TTY:** line 1 **red**; lines 2–3 **dim**. No blank line between line 1 and line 2.
+
+**Invalid multi-connection config** (more than one key under `connections` in `.stash/config.json`):
+
+```text
+This stash has more than one connection in .stash/config.json (only one is supported).
+Remove extra entries or run:
+  stash disconnect --all
+Then connect again.
+```
+
+**TTY:** line 1 **red**; lines 2–4 **dim**.
+
+### Git safety warning on `connect` (stdout)
+
+After `Connected <name>.` when `.git` exists and `allow-git` is not `true`:
+
+```text
+Warning: This directory contains .git. Stash will not sync until you either:
+  - remove .git, or
+  - run `stash config set allow-git true` (see "Using stash with git" in the README)
+```
+
+**TTY:** `Warning:` **yellow**; the rest of each line **dim**.
+
+### `stash setup` (stdout)
+
+```text
+Configured github.
+```
+
+**TTY:** default foreground (no color codes for this line).
+
+### Other commands
+
+Success paths, `disconnect`, `config`, `sync`, `watch`, `status`, and `start`/`stop` edge cases are documented **with the same level of detail** under each command above; the **palette rules** here apply consistently.
+
 ## UI Style
 
 The CLI output intentionally uses a compact, app-like style:
 
 - primary state lines use sentence case, for example `Background sync is on`
 - secondary context lines are short and actionable, for example `Run \`stash start\` to resume syncing 3 stashes`
-- transient spinner/live lines also use sentence case, for example `Checking...` and `Syncing...`
+- transient spinner/live lines use **lowercase** status words in the spinner body, for example `checking...` and `syncing...` (spinner frames remain `◐◓◑◒`)
 - local and global status phrases are capitalized consistently: `Up to date`, `Local changes`, `Waiting for first sync`, `Directory not found`
 - counts should pluralize naturally, for example `Watching 1 stash` and `Watching 3 stashes`
-- color is part of the UI contract in TTY mode:
-  - success/current healthy state uses green
-  - warnings or changed local state use yellow where applicable
-  - failures and unsupported platform messages use red
-  - secondary detail uses dim text
+- color is part of the UI contract in TTY mode — see [Output examples and TTY colors](#output-examples-and-tty-colors) for exact strings and segment-by-segment color
 
 These presentation details are intentional behavior, not incidental formatting.
 

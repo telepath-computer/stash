@@ -23,7 +23,7 @@ export class GitRepoError extends Error {
 
 export class MultipleConnectionsError extends Error {
   constructor(
-    message = "multiple connections are not yet supported — disconnect the existing connection before adding a new one",
+    message = "Only one connection per stash — disconnect the existing connection before adding another (or fix .stash/config.json if it lists more than one).",
   ) {
     super(message);
     this.name = "MultipleConnectionsError";

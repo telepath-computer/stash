@@ -125,6 +125,8 @@ This is useful for code that needs the effective provider configuration, not jus
 
 Stores named connection config in `.stash/config.json`.
 
+At most one connection is supported per stash. If one connection exists and `connect` uses a **different** name, throws `MultipleConnectionsError`. Calling `connect` with the same name as an existing entry updates that entry. (The CLI rejects a duplicate name before calling `connect`; see `docs/cli.md`.)
+
 ### `disconnect(name)`
 
 Removes connection config for a named connection from `.stash/config.json`.
@@ -136,6 +138,7 @@ Runs one full sync cycle.
 Behavioral contract:
 
 - no configured connections -> no-op
+- more than one connection in local config -> throws `MultipleConnectionsError` (invalid until reduced to one)
 - one active sync at a time per `Stash` instance
 - cross-process lock enforced through `.stash/sync.lock`
 - may throw `GitRepoError`

@@ -31,7 +31,13 @@ cd dir-to-sync/
 stash connect github origin
 ```
 
-Stash will prompt for your repo and token (you'll only need to enter the token once). Each stash currently supports a single connection — to change providers or repos, disconnect first with `stash disconnect`. Then choose how to sync:
+Stash will prompt for your repo and token (you'll only need to enter the token once).
+
+**One connection per stash.** A stash directory shares a single snapshot on disk, so only one named connection is allowed. Adding a second name (for example `stash connect github backup` while `origin` exists) fails until you disconnect. To point at a different repo or provider, run `stash disconnect <name>` or `stash disconnect --all`, then connect again.
+
+If `.stash/config.json` is edited by hand and lists more than one connection, `stash sync` refuses until you fix it.
+
+Then choose how to sync:
 
 ```bash
 stash sync          # Sync once
@@ -55,24 +61,24 @@ Use this token when running `stash setup github`. A classic token with the `repo
 - **Smart text merging.** Different-region edits combine cleanly. Overlapping edits preserve both sides instead of silently dropping content.
 - **Binary files** use last-modified-wins.
 - **Automatic tracking.** Every file in the directory is synced except dotfiles, dot-directories, symlinks, and local-only `.stash/` metadata.
+- **One remote per folder.** Multiple named connections per stash are not supported yet; use one connection name until per-connection snapshots exist.
 
 ## Commands
 
-| Command | Description |
-|---|---|
-| `stash connect <provider> [name]` | Initialize a stash and add a named connection |
-| `stash disconnect <name>` | Disconnect one named connection |
-| `stash disconnect --all` | Disconnect the current stash completely |
-| `stash disconnect --path <path>` | Disconnect a stash by path |
-| `stash sync` | Sync once |
-| `stash watch` | Watch and sync continuously in the foreground |
-| `stash start` | Start background sync (resumes on restart) |
-| `stash stop` | Stop and uninstall the background service |
-| `stash status` | Show status of the current stash |
-| `stash status --all` | Show status of all stashes |
-| `stash setup <provider>` | Update provider credentials |
-| `stash config set <key> <value>` | Set a per-stash config value |
-| `stash config get <key>` | Get a per-stash config value |
+| Command                           | Description                                                                |
+| --------------------------------- | -------------------------------------------------------------------------- |
+| `stash connect <provider> [name]` | Initialize a stash and add a named connection                              |
+| `stash disconnect <name>`         | Disconnect one named connection                                            |
+| `stash disconnect --all`          | Disconnect the current stash completely                                    |
+| `stash disconnect --path <path>`  | Disconnect a stash by path                                                 |
+| `stash sync`                      | Sync once                                                                  |
+| `stash watch`                     | Watch and sync continuously in the foreground                              |
+| `stash start`                     | Start background sync (resumes on restart)                                 |
+| `stash stop`                      | Stop and uninstall the background service                                  |
+| `stash status`                    | Show background sync state and every registered stash (from any directory) |
+| `stash setup <provider>`          | Update provider credentials                                                |
+| `stash config set <key> <value>`  | Set a per-stash config value                                               |
+| `stash config get <key>`          | Get a per-stash config value                                               |
 
 ## Using stash with git
 

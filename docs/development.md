@@ -79,8 +79,7 @@ The VM test suite in `tests/vm/` provisions a DigitalOcean droplet, rsyncs the p
 - `DO_TOKEN` must be set (DigitalOcean API token with droplet create/read/delete and SSH key read permissions).
 - An SSH key at `~/.ssh/id_ed25519` is required (uploaded to DO automatically on first run).
 - The droplet is destroyed after tests unless `VM_KEEP=1` is set.
-- The `service` mode tests `stash start`, `stash status --all`, and `stash stop` behavior against real systemd.
-
+- The `service` mode tests `stash start`, `stash status`, and `stash stop` behavior against real systemd.
 
 ## Docs Maintenance
 

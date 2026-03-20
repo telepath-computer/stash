@@ -64,7 +64,7 @@ echo "--- Waiting for service to start ---"
 sleep 3
 
 echo "--- Checking service status ---"
-stash status --all 2>&1 || true
+stash status 2>&1 || true
 
 # Check systemd directly
 if command -v systemctl &>/dev/null; then

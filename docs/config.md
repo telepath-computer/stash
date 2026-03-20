@@ -35,7 +35,7 @@ Older prerelease stashes that still use `.stash/config.local.json` are migrated 
 
 It stores:
 
-- named connection settings for this stash
+- named connection settings for this stash (only **one** connection is supported; extra keys break `sync` until removed)
 - per-stash safety and behavior flags
 
 Example:

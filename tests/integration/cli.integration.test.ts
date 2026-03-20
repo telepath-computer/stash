@@ -149,7 +149,8 @@ test("cli connect errors when adding a second connection with a different name",
 
     assert.equal(result.code, 1);
     const combined = (result.stdout ?? "") + (result.stderr ?? "");
-    assert.equal(combined.includes("multiple connections are not yet supported"), true);
+    assert.equal(combined.includes('already has connection "origin"'), true);
+    assert.equal(combined.includes("stash disconnect origin"), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -335,4 +336,3 @@ test("cli sync migrates the legacy local stash layout before a no-op sync", asyn
     await rm(dir, { recursive: true, force: true });
   }
 });
-

@@ -19,6 +19,7 @@ import { readLocalConfig, writeLocalConfig } from "./local-config.ts";
 import { runDaemon } from "./daemon.ts";
 import { needsMigration } from "./migrations.ts";
 import { providers } from "./providers/index.ts";
+import { CliDisplayError } from "./cli-display-error.ts";
 import { Stash } from "./stash.ts";
 import { createColors } from "./ui/color.ts";
 import { formatTimeAgo } from "./ui/format.ts";
@@ -66,6 +67,53 @@ function isStashConfigKey(key: string): key is "allow-git" {
 
 function isStashDirectory(dir: string): boolean {
   return existsSync(join(dir, ".stash"));
+}
+
+/**
+ * Before any connect prompts, reject connection names that conflict with existing
+ * `.stash/config.json` state. Keeps expensive/interactive setup from running when
+ * the command cannot succeed.
+ */
+async function assertNewConnectionAllowedForDirectory(
+  dir: string,
+  resolvedConnectionName: string,
+): Promise<void> {
+  if (!isStashDirectory(dir)) {
+    return;
+  }
+
+  const local = await readLocalConfig(dir);
+  const names = Object.keys(local.connections);
+
+  if (names.includes(resolvedConnectionName)) {
+    throw new CliDisplayError([
+      { kind: "primary", text: `Connection already exists: ${resolvedConnectionName}` },
+    ]);
+  }
+
+  if (names.length > 1) {
+    throw new CliDisplayError([
+      {
+        kind: "primary",
+        text: "This stash has more than one connection in .stash/config.json (only one is supported).",
+      },
+      { kind: "dim", text: "Remove extra entries or run:" },
+      { kind: "dim", text: "  stash disconnect --all" },
+      { kind: "dim", text: "Then connect again." },
+    ]);
+  }
+
+  if (names.length === 1) {
+    const existing = names[0];
+    throw new CliDisplayError([
+      {
+        kind: "primary",
+        text: `This stash already has connection "${existing}" (only one is supported).`,
+      },
+      { kind: "dim", text: `Disconnect it before adding "${resolvedConnectionName}":` },
+      { kind: "dim", text: `  stash disconnect ${existing}` },
+    ]);
+  }
 }
 
 function getProvider(name: string): ProviderClass {
@@ -236,6 +284,9 @@ async function runConnect(
   const { dim, green } = createColors(stdout);
   const provider = getProvider(providerName);
   const resolvedConnectionName = connectionName ?? providerName;
+  const dir = deps.cwd();
+  await assertNewConnectionAllowedForDirectory(dir, resolvedConnectionName);
+
   let globalConfig = await deps.readGlobalConfig();
   const setupValues = await collectFields(
     provider.spec.setup,
@@ -245,11 +296,7 @@ async function runConnect(
   globalConfig = setProviderConfig(globalConfig, providerName, setupValues);
   await deps.writeGlobalConfig(globalConfig);
 
-  const dir = deps.cwd();
   const stash = await Stash.init(dir, globalConfig);
-  if (stash.connections[resolvedConnectionName]) {
-    throw new Error(`Connection already exists: ${resolvedConnectionName}`);
-  }
   const connectValues = await collectFields(provider.spec.connect, valuesFromCli);
   await stash.connect({
     name: resolvedConnectionName,

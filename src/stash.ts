@@ -18,7 +18,12 @@ import { hostname } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Emitter } from "./emitter.ts";
-import { GitRepoError, MultipleConnectionsError, PushConflictError, SyncLockError } from "./errors.ts";
+import {
+  GitRepoError,
+  MultipleConnectionsError,
+  PushConflictError,
+  SyncLockError,
+} from "./errors.ts";
 import { normalizeGlobalConfig } from "./global-config.ts";
 import { getLocalConfigPath, readLocalConfig, writeLocalConfig } from "./local-config.ts";
 import { ensureMigration } from "./migrations.ts";

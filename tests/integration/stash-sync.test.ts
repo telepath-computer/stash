@@ -4,7 +4,12 @@ import { existsSync, readdirSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { hashBuffer } from "../../src/utils/hash.ts";
-import { GitRepoError, MultipleConnectionsError, PushConflictError, SyncLockError } from "../../src/errors.ts";
+import {
+  GitRepoError,
+  MultipleConnectionsError,
+  PushConflictError,
+  SyncLockError,
+} from "../../src/errors.ts";
 import { FakeProvider } from "../helpers/fake-provider.ts";
 import { makeStash, writeFiles } from "../helpers/make-stash.ts";
 
@@ -281,7 +286,11 @@ test("sync: multiple connections throws", async () => {
   await writeFile(configPath, JSON.stringify(config, null, 2), "utf8");
   // Reload to pick up both connections
   const { Stash } = await import("../../src/stash.ts");
-  const reloaded = await Stash.load(dir, { providers: {}, background: { stashes: [] } }, { providers: fakeRegistry(fake) });
+  const reloaded = await Stash.load(
+    dir,
+    { providers: {}, background: { stashes: [] } },
+    { providers: fakeRegistry(fake) },
+  );
 
   await assert.rejects(reloaded.sync(), MultipleConnectionsError);
   assert.equal(fake.fetchCalls, 0);
