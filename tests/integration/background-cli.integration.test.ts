@@ -511,7 +511,7 @@ test("stop delegates to uninstall and reports how to resume syncing", async () =
   }
 });
 
-test("status --all prints unsupported-platform state and per-stash summaries", async () => {
+test("status prints unsupported-platform state and per-stash summaries", async () => {
   const dir = await makeTempDir("stash-cli-status-all");
 
   try {
@@ -545,7 +545,7 @@ test("status --all prints unsupported-platform state and per-stash summaries", a
     );
     await writeFile(join(dir, ".stash", "snapshot.json"), JSON.stringify({}, null, 2), "utf8");
 
-    const result = await runMain(dir, ["status", "--all"], {
+    const result = await runMain(dir, ["status"], {
       config: {
         providers: {},
         background: {
@@ -566,7 +566,7 @@ test("status --all prints unsupported-platform state and per-stash summaries", a
   }
 });
 
-test("status --all shows the git safety error message", async () => {
+test("status shows the git safety error message", async () => {
   const dir = await makeTempDir("stash-cli-status-all-git-error");
 
   try {
@@ -599,7 +599,7 @@ test("status --all shows the git safety error message", async () => {
       "utf8",
     );
 
-    const result = await runMain(dir, ["status", "--all"], {
+    const result = await runMain(dir, ["status"], {
       config: {
         providers: {},
         background: {
@@ -616,7 +616,7 @@ test("status --all shows the git safety error message", async () => {
   }
 });
 
-test("status shows the current stash and hints toward --all when background sync is running", async () => {
+test("status shows the current stash when background sync is running", async () => {
   const dir = await makeTempDir("stash-cli-status-local");
 
   try {
@@ -646,13 +646,13 @@ test("status shows the current stash and hints toward --all when background sync
 
     assert.equal(result.stdout.includes("origin (github)"), true);
     assert.equal(result.stdout.includes("user/repo"), false);
-    assert.equal(result.stdout.includes("Use `stash status --all` to view all stashes"), true);
+    assert.equal(result.stdout.includes("Background sync is on"), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("status uses a yellow dot while waiting for first sync", async () => {
+test("status shows waiting for first sync when no snapshot exists", async () => {
   const dir = await makeTempDir("stash-cli-status-waiting");
 
   try {
@@ -674,50 +674,28 @@ test("status uses a yellow dot while waiting for first sync", async () => {
     const result = await runMain(dir, ["status"], {
       config: {
         providers: {},
-        background: { stashes: [] },
+        background: { stashes: [resolve(dir)] },
       },
       tty: true,
     });
 
-    assert.equal(result.stdout.includes("\u001b[33m●\u001b[0m origin (github)"), true);
+    assert.equal(result.stdout.includes("origin (github)"), true);
     assert.equal(result.stdout.includes("Waiting for first sync"), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("status outside a stash tells the user to use --all", async () => {
+test("status outside a stash shows no stashes connected", async () => {
   const dir = await makeTempDir("stash-cli-status-outside");
 
   try {
-    const result = await main(["node", "stash", "status"], {
-      cwd: () => dir,
-      readGlobalConfig: async () => ({ providers: {}, background: { stashes: [] } }),
-      writeGlobalConfig: async () => {},
-      service: {
-        install: async () => {},
-        uninstall: async () => {},
-        status: async () => ({ installed: false, running: false }),
-      },
-      stdout: {
-        isTTY: false,
-        write() {
-          return true;
-        },
-      } as NodeJS.WriteStream,
-      stderr: {
-        isTTY: false,
-        write() {
-          return true;
-        },
-      } as NodeJS.WriteStream,
-    }).catch((error) => error as Error);
+    const result = await runMain(dir, ["status"], {
+      config: { providers: {}, background: { stashes: [] } },
+      serviceStatus: { installed: false, running: false },
+    });
 
-    assert.equal(result instanceof Error, true);
-    assert.equal(
-      (result as Error).message,
-      "Not in a stash directory — run `stash status --all` to view all stashes",
-    );
+    assert.equal(result.stdout.includes("No stashes connected yet"), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -777,7 +755,7 @@ test("migration does not bounce the daemon when it is not running", async () => 
   }
 });
 
-test("migration bounces daemon for status --all when a background stash needs migration", async () => {
+test("migration bounces daemon for status when a background stash needs migration", async () => {
   const dir = await makeTempDir("stash-cli-migrate-status-all");
 
   try {
@@ -787,7 +765,7 @@ test("migration bounces daemon for status --all when a background stash needs mi
     });
     await writeFile(join(dir, ".stash", "snapshot.json"), JSON.stringify({}, null, 2), "utf8");
 
-    const result = await runMain(dir, ["status", "--all"], {
+    const result = await runMain(dir, ["status"], {
       config: {
         providers: {},
         background: { stashes: [dir] },

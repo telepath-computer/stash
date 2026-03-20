@@ -306,22 +306,3 @@ test("cli sync migrates the legacy local stash layout before a no-op sync", asyn
   }
 });
 
-test("cli status migrates the legacy local stash layout", async () => {
-  const dir = await makeTempDir("cli-status-migration");
-  try {
-    await writeLegacyLayout(dir, {
-      connections: {},
-      snapshotLocal: { "note.md": "base" },
-    });
-
-    const result = await runCli(dir, ["status"]);
-    assert.equal(result.stdout.includes("No connections"), true);
-
-    await assertMigration(dir, {
-      connections: {},
-      snapshotLocal: { "note.md": "base" },
-    });
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});

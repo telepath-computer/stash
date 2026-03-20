@@ -443,7 +443,7 @@ async function runStatusAll(
   if (stashes.length === 0) {
     writeLine(
       stdout,
-      "No stashes connected yet — run `stash connect <provider> <name>` in a directory to add one",
+      "No stashes connected yet — run `stash connect <provider> <name>` in a directory to get started",
     );
     return;
   }
@@ -524,64 +524,6 @@ async function runStatusAll(
         `  ${formatConnectionLabel(connectionName, connection.provider)} ${dim("·")} ${dim(formatConnectionSummary(localStatus))}`,
       );
     }
-  }
-}
-
-async function runStatus(
-  cwd: () => string,
-  readConfig: () => Promise<GlobalConfig>,
-  serviceHandle: ServiceHandle,
-  stdout: NodeJS.WriteStream,
-): Promise<void> {
-  const { dim, green, yellow, red } = createColors(stdout);
-  const dir = cwd();
-  if (!isStashDirectory(dir)) {
-    throw new Error("Not in a stash directory — run `stash status --all` to view all stashes");
-  }
-
-  const globalConfig = await readConfig();
-  const stash = await Stash.load(dir, globalConfig);
-  const connectionNames = Object.keys(stash.connections);
-
-  if (connectionNames.length === 0) {
-    writeLine(stdout, dim("No connections — run `stash connect <provider> <name>` to get started"));
-    return;
-  }
-
-  if (getBackgroundStashes(globalConfig).includes(resolve(dir))) {
-    try {
-      const current = await serviceHandle.status();
-      if (current.running) {
-        writeLine(
-          stdout,
-          `${green("Background sync is on")} ${dim("·")} ${dim("Use `stash status --all` to view all stashes")}`,
-        );
-      } else {
-        writeLine(
-          stdout,
-          `${red("Background sync is off")} ${dim("·")} ${dim("Run `stash start` to keep connected stashes in sync")}`,
-        );
-      }
-    } catch (error) {
-      if (isUnsupportedPlatformError(error)) {
-        writeLine(stdout, `${red("Background sync is not supported on this platform")}`);
-      } else {
-        throw error;
-      }
-    }
-    writeLine(stdout, "");
-  }
-
-  const status = stash.status();
-  const parts = formatChangeParts(status);
-
-  for (const name of connectionNames) {
-    const conn = stash.connections[name];
-    const dot = parts.length > 0 || !status.lastSync ? yellow("●") : green("●");
-    writeLine(
-      stdout,
-      `${dot} ${formatConnectionLabel(name, conn.provider)} ${dim("·")} ${dim(formatConnectionSummary(status))}`,
-    );
   }
 }
 
@@ -809,15 +751,9 @@ export async function main(argv = process.argv, deps: CliDependencies = {}): Pro
     .action(() => runWatch(cwd, readConfig));
   program
     .command("status")
-    .description("Show local stash status")
-    .option("--all", "Show all connected stashes")
-    .action(async (_opts: unknown, command: Command) => {
-      const opts = command.opts() as { all?: boolean };
-      if (opts.all) {
-        await runStatusAll(readConfig, await getService(), stdout);
-        return;
-      }
-      await runStatus(cwd, readConfig, await getService(), stdout);
+    .description("Show all connected stashes")
+    .action(async () => {
+      await runStatusAll(readConfig, await getService(), stdout);
     });
 
   const configCommand = program.command("config").description("Manage stash config");
