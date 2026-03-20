@@ -24,7 +24,7 @@ import { formatTimeAgo } from "./ui/format.ts";
 import { LiveLine } from "./ui/live-line.ts";
 import { SyncRenderer } from "./ui/sync-renderer.ts";
 import { watch as watchStash } from "./watch.ts";
-import type { Field, GlobalConfig, ProviderClass } from "./types.ts";
+import type { Field, GlobalConfig, ProviderClass, StatusResult } from "./types.ts";
 
 const SERVICE_NAME = "stash-background";
 const SERVICE_DESCRIPTION = "Stash background sync";
@@ -96,7 +96,7 @@ async function bounceDaemonIfMigrationNeeded(
   dir: string,
   getService: () => Promise<ServiceHandle>,
 ): Promise<boolean> {
-  if (!isStashDirectory(dir) || !needsMigration(dir)) {
+  if (!isStashDirectory(dir) || !(await needsMigration(dir))) {
     return false;
   }
   try {
@@ -225,6 +225,7 @@ async function runSetup(
 
 async function runConnect(
   providerName: string,
+  connectionName: string | undefined,
   valuesFromCli: Record<string, string | boolean | undefined>,
   deps: Required<Pick<CliDependencies, "cwd" | "readGlobalConfig" | "writeGlobalConfig">> & {
     getService?: () => Promise<ServiceHandle>;
@@ -233,6 +234,7 @@ async function runConnect(
 ): Promise<void> {
   const { dim, green } = createColors(stdout);
   const provider = getProvider(providerName);
+  const resolvedConnectionName = connectionName ?? providerName;
   let globalConfig = await deps.readGlobalConfig();
   const setupValues = await collectFields(
     provider.spec.setup,
@@ -244,12 +246,19 @@ async function runConnect(
 
   const dir = deps.cwd();
   const stash = await Stash.init(dir, globalConfig);
+  if (stash.connections[resolvedConnectionName]) {
+    throw new Error(`Connection already exists: ${resolvedConnectionName}`);
+  }
   const connectValues = await collectFields(provider.spec.connect, valuesFromCli);
-  await stash.connect(providerName, connectValues);
+  await stash.connect({
+    name: resolvedConnectionName,
+    provider: providerName,
+    ...connectValues,
+  });
   globalConfig = await deps.readGlobalConfig();
   await deps.writeGlobalConfig(addBackgroundStash(globalConfig, resolve(dir)));
 
-  writeLine(stdout, `Connected ${providerName}.`);
+  writeLine(stdout, `Connected ${resolvedConnectionName}.`);
   await warnIfGitSyncBlocked(dir, stdout);
 
   if (!deps.getService) {
@@ -277,18 +286,75 @@ async function runConnect(
   }
 }
 
+function formatConnectionLabel(name: string, provider: string): string {
+  return `${name} (${provider})`;
+}
+
+function validateDisconnectSelection(
+  name: string | undefined,
+  all: boolean,
+  targetPath: string | undefined,
+): { name?: string; all: boolean; targetPath?: string } {
+  const selected = [name ? "name" : null, all ? "all" : null, targetPath ? "path" : null].filter(
+    (value): value is string => value !== null,
+  );
+  if (selected.length === 0) {
+    throw new Error(
+      "argument required — run `stash disconnect <name>`, `stash disconnect --all`, or `stash disconnect --path <path>`",
+    );
+  }
+  if (selected.length > 1) {
+    throw new Error(
+      "disconnect modes are mutually exclusive — use only one of `<name>`, `--all`, or `--path <path>`",
+    );
+  }
+  return { name, all, targetPath };
+}
+
+function formatConnectionSummary(status: StatusResult): string {
+  const parts = formatChangeParts(status);
+  if (status.lastSync) {
+    const ago = formatTimeAgo(status.lastSync);
+    return parts.length > 0
+      ? `Local changes: ${parts.join(", ")} · synced ${ago}`
+      : `Up to date · synced ${ago}`;
+  }
+  if (parts.length > 0) {
+    return `Local changes: ${parts.join(", ")} · Never synced`;
+  }
+  return "Waiting for first sync";
+}
+
 async function runDisconnect(
-  providerName: string | undefined,
+  name: string | undefined,
+  all: boolean,
+  targetPath: string | undefined,
   cwd: () => string,
   readConfig: () => Promise<GlobalConfig>,
   writeConfig: (config: GlobalConfig) => Promise<void>,
   stdout: NodeJS.WriteStream,
 ): Promise<void> {
-  const dir = cwd();
+  const selection = validateDisconnectSelection(name, all, targetPath);
   const globalConfig = await readConfig();
+  if (selection.targetPath) {
+    const resolvedPath = resolve(selection.targetPath);
+    const wasRegistered = getBackgroundStashes(globalConfig).includes(resolvedPath);
+    if (!wasRegistered) {
+      writeLine(stdout, "No stash registered at that path.");
+      return;
+    }
+    await writeConfig(removeBackgroundStash(globalConfig, resolvedPath));
+    if (existsSync(resolvedPath)) {
+      await rm(join(resolvedPath, ".stash"), { recursive: true, force: true });
+    }
+    writeLine(stdout, "Disconnected stash.");
+    return;
+  }
+
+  const dir = cwd();
   const stash = await Stash.load(dir, globalConfig);
 
-  if (!providerName) {
+  if (selection.all) {
     for (const name of Object.keys(stash.connections)) {
       await stash.disconnect(name);
     }
@@ -298,12 +364,17 @@ async function runDisconnect(
     return;
   }
 
-  await stash.disconnect(providerName);
+  const connectionName = selection.name!;
+  if (!stash.connections[connectionName]) {
+    throw new Error(`Connection not found: ${connectionName}`);
+  }
+
+  await stash.disconnect(connectionName);
   if (Object.keys(stash.connections).length === 0) {
     await writeConfig(removeBackgroundStash(globalConfig, resolve(dir)));
     await rm(join(dir, ".stash"), { recursive: true, force: true });
   }
-  writeLine(stdout, `Disconnected ${providerName}.`);
+  writeLine(stdout, `Disconnected ${connectionName}.`);
 }
 
 async function runSync(cwd: () => string, readConfig: () => Promise<GlobalConfig>): Promise<void> {
@@ -338,7 +409,7 @@ async function runWatch(cwd: () => string, readConfig: () => Promise<GlobalConfi
   const dir = cwd();
   const stash = await Stash.load(dir, await readConfig());
   if (Object.keys(stash.connections).length === 0) {
-    throw new Error("no connection configured — run `stash connect <provider>` first");
+    throw new Error("no connection configured — run `stash connect <provider> <name>` first");
   }
   await watchStash(stash, { dir, stdin: process.stdin, stdout: process.stdout });
 }
@@ -371,7 +442,7 @@ async function runStatusAll(
   if (stashes.length === 0) {
     writeLine(
       stdout,
-      "No stashes connected yet — run `stash connect <provider>` in a directory to add one",
+      "No stashes connected yet — run `stash connect <provider> <name>` in a directory to add one",
     );
     return;
   }
@@ -424,12 +495,11 @@ async function runStatusAll(
     if (persistedStatus?.kind === "error") {
       writeLine(stdout, `${red("✗")} ${title}`);
       writeLine(stdout, dim(`  ${dir}`));
-      for (const providerName of connectionNames) {
-        const conn = stash.connections[providerName];
-        const label = conn.repo ?? Object.values(conn).join(", ");
+      for (const connectionName of connectionNames) {
+        const connection = stash.connections[connectionName];
         writeLine(
           stdout,
-          `  ${providerName}  ${label} ${dim("·")} ${red(persistedStatus.error ?? "unknown error")}`,
+          `  ${formatConnectionLabel(connectionName, connection.provider)} ${dim("·")} ${red(persistedStatus.error ?? "unknown error")}`,
         );
       }
       continue;
@@ -438,29 +508,20 @@ async function runStatusAll(
     writeLine(stdout, `${green("●")} ${title}`);
     writeLine(stdout, dim(`  ${dir}`));
 
-    for (const providerName of connectionNames) {
-      const conn = stash.connections[providerName];
-      const label = conn.repo ?? Object.values(conn).join(", ");
+    for (const connectionName of connectionNames) {
+      const connection = stash.connections[connectionName];
       if (persistedStatus === null || localStatus.lastSync === null) {
         writeLine(
           stdout,
-          `  ${providerName}  ${label} ${dim("·")} ${dim("Waiting for first sync")}`,
+          `  ${formatConnectionLabel(connectionName, connection.provider)} ${dim("·")} ${dim("Waiting for first sync")}`,
         );
         continue;
       }
 
-      const parts = formatChangeParts(localStatus);
-      if (parts.length > 0) {
-        writeLine(
-          stdout,
-          `  ${providerName}  ${label} ${dim("·")} Local changes: ${parts.join(", ")} ${dim("·")} ${dim(`synced ${formatTimeAgo(localStatus.lastSync)}`)}`,
-        );
-      } else {
-        writeLine(
-          stdout,
-          `  ${providerName}  ${label} ${dim("·")} ${dim(`Up to date · synced ${formatTimeAgo(localStatus.lastSync)}`)}`,
-        );
-      }
+      writeLine(
+        stdout,
+        `  ${formatConnectionLabel(connectionName, connection.provider)} ${dim("·")} ${dim(formatConnectionSummary(localStatus))}`,
+      );
     }
   }
 }
@@ -482,7 +543,7 @@ async function runStatus(
   const connectionNames = Object.keys(stash.connections);
 
   if (connectionNames.length === 0) {
-    writeLine(stdout, dim("No connections — run `stash connect <provider>` to get started"));
+    writeLine(stdout, dim("No connections — run `stash connect <provider> <name>` to get started"));
     return;
   }
 
@@ -515,25 +576,11 @@ async function runStatus(
 
   for (const name of connectionNames) {
     const conn = stash.connections[name];
-    const label = conn.repo ?? Object.values(conn).join(", ");
-    const dot = parts.length > 0 ? yellow("●") : green("●");
-    writeLine(stdout, `${dot} ${name}  ${dim(label)}`);
-
-    if (status.lastSync) {
-      const ago = formatTimeAgo(status.lastSync);
-      if (parts.length > 0) {
-        writeLine(
-          stdout,
-          `  Local changes: ${parts.join(", ")} ${dim("·")} ${dim(`synced ${ago}`)}`,
-        );
-      } else {
-        writeLine(stdout, dim(`  Up to date · synced ${ago}`));
-      }
-    } else if (parts.length > 0) {
-      writeLine(stdout, `  Local changes: ${parts.join(", ")} ${dim("·")} ${dim("Never synced")}`);
-    } else {
-      writeLine(stdout, dim("  Never synced"));
-    }
+    const dot = parts.length > 0 || !status.lastSync ? yellow("●") : green("●");
+    writeLine(
+      stdout,
+      `${dot} ${formatConnectionLabel(name, conn.provider)} ${dim("·")} ${dim(formatConnectionSummary(status))}`,
+    );
   }
 }
 
@@ -706,28 +753,47 @@ export async function main(argv = process.argv, deps: CliDependencies = {}): Pro
     .command("connect")
     .description("Connect this stash to a provider")
     .argument("<provider>", "Provider name")
+    .argument("[name]", "Connection name")
     .allowUnknownOption(true)
-    .action(async (providerName: string, _opts: unknown, command: Command) => {
-      const opts = command.opts() as Record<string, string | boolean | undefined>;
-      await runConnect(
-        providerName,
-        opts,
-        {
-          cwd,
-          readGlobalConfig: readConfig,
-          writeGlobalConfig: writeConfig,
-          getService,
-        },
-        stdout,
-      );
-    });
+    .action(
+      async (
+        providerName: string,
+        connectionName: string | undefined,
+        _opts: unknown,
+        command: Command,
+      ) => {
+        const opts = command.opts() as Record<string, string | boolean | undefined>;
+        await runConnect(
+          providerName,
+          connectionName,
+          opts,
+          {
+            cwd,
+            readGlobalConfig: readConfig,
+            writeGlobalConfig: writeConfig,
+            getService,
+          },
+          stdout,
+        );
+      },
+    );
 
   program
     .command("disconnect")
-    .description("Disconnect provider from this stash")
-    .argument("[provider]", "Provider name")
-    .action(async (providerName?: string) => {
-      await runDisconnect(providerName, cwd, readConfig, writeConfig, stdout);
+    .description("Disconnect a named connection or stash")
+    .argument("[name]", "Connection name")
+    .option("--all", "Disconnect all connections in the current stash")
+    .option("--path <path>", "Disconnect a stash by path")
+    .action(async (name: string | undefined, options: { all?: boolean; path?: string }) => {
+      await runDisconnect(
+        name,
+        options.all === true,
+        options.path,
+        cwd,
+        readConfig,
+        writeConfig,
+        stdout,
+      );
     });
   program
     .command("sync")

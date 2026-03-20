@@ -33,7 +33,7 @@ test("sync: first sync pushes all local files", async () => {
     { "hello.md": "hello", "notes/todo.md": "buy milk" },
     { providers: fakeRegistry(fake) },
   );
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
 
   await stash.sync();
 
@@ -58,7 +58,7 @@ test("sync: first sync pulls all remote files", async () => {
     },
   });
   const { stash, dir } = await makeStash({}, { providers: fakeRegistry(fake) });
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
 
   await stash.sync();
 
@@ -78,7 +78,7 @@ test("sync: pulls remote files in nested directories when parent directories do 
     },
   });
   const { stash, dir } = await makeStash({}, { providers: fakeRegistry(fake) });
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
 
   await stash.sync();
 
@@ -91,7 +91,7 @@ test("sync: merge cycle preserves both edits", async () => {
     { "hello.md": "line1\nline2\nline3" },
     { providers: fakeRegistry(fake) },
   );
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
   await stash.sync();
 
   await writeFiles(dir, { "hello.md": "LINE1\nline2\nline3" });
@@ -110,7 +110,7 @@ test("sync: merge cycle preserves both edits", async () => {
 test("sync: emits mutation events", async () => {
   const fake = new FakeProvider();
   const { stash } = await makeStash({ "hello.md": "hello" }, { providers: fakeRegistry(fake) });
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
 
   const mutations: unknown[] = [];
   stash.on("mutation", (m) => {
@@ -127,7 +127,7 @@ test("sync: push payload contains expected files deletions and snapshot", async 
     { "hello.md": "hello", "remove.md": "remove-me" },
     { providers: fakeRegistry(fake) },
   );
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
   await stash.sync();
 
   await writeFiles(dir, { "hello.md": "hello world", "new.md": "draft" });
@@ -146,7 +146,7 @@ test("sync: push payload contains expected files deletions and snapshot", async 
 test("sync: PushConflictError triggers retry", async () => {
   const fake = new FakeProvider();
   const { stash } = await makeStash({ "hello.md": "hello" }, { providers: fakeRegistry(fake) });
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
   fake.failNextPush = true;
 
   await stash.sync();
@@ -157,7 +157,7 @@ test("sync: PushConflictError triggers retry", async () => {
 test("sync: max retries exceeded throws", async () => {
   const fake = new FakeProvider();
   const { stash } = await makeStash({ "hello.md": "hello" }, { providers: fakeRegistry(fake) });
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
   fake.alwaysConflict = true;
 
   await assert.rejects(stash.sync(), PushConflictError);
@@ -172,7 +172,7 @@ test("sync: no connection is a no-op", async () => {
 test("sync: single-flight guard rejects concurrent sync", async () => {
   const fake = new FakeProvider();
   const { stash } = await makeStash({ "hello.md": "hello" }, { providers: fakeRegistry(fake) });
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
 
   fake.push = async (...args) => {
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -193,7 +193,7 @@ test("sync: snapshot writes text files and skips binary files", async () => {
     },
     { providers: fakeRegistry(fake) },
   );
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
   await stash.sync();
 
   assert.equal(await readFile(join(dir, ".stash", "snapshot", "text.md"), "utf8"), "hello");
@@ -206,7 +206,7 @@ test("sync: deleting a file removes it from snapshot", async () => {
     { "hello.md": "hello" },
     { providers: fakeRegistry(fake) },
   );
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
   await stash.sync();
   assert.equal(existsSync(join(dir, ".stash", "snapshot", "hello.md")), true);
 
@@ -230,7 +230,7 @@ test("sync: first sync with identical content on both sides skips file writes", 
     { "hello.md": "hello", "notes/todo.md": "buy milk" },
     { providers: fakeRegistry(fake) },
   );
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
 
   await stash.sync();
 
@@ -259,7 +259,7 @@ test("sync: git repository without allow-git throws", async () => {
     { "hello.md": "hello" },
     { providers: fakeRegistry(fake) },
   );
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
   await mkdir(join(dir, ".git"), { recursive: true });
 
   await assert.rejects(stash.sync(), GitRepoError);
@@ -273,10 +273,14 @@ test("sync: allow-git permits syncing inside a git repository", async () => {
     { "hello.md": "hello" },
     { providers: fakeRegistry(fake) },
   );
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
   await writeFile(
     join(dir, ".stash", "config.json"),
-    JSON.stringify({ "allow-git": true, connections: { fake: { repo: "r" } } }, null, 2),
+    JSON.stringify(
+      { "allow-git": true, connections: { fake: { provider: "fake", repo: "r" } } },
+      null,
+      2,
+    ),
     "utf8",
   );
   await mkdir(join(dir, ".git"), { recursive: true });
@@ -291,7 +295,7 @@ test("sync: skip/skip mutations with changed snapshot still pushes snapshot", as
     { "hello.md": "hello" },
     { providers: fakeRegistry(fake) },
   );
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
   await stash.sync();
 
   await writeFiles(dir, { "hello.md": "updated" });
@@ -330,7 +334,7 @@ test("sync: remote-source binary winner is not re-uploaded", async () => {
       },
     },
   );
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
 
   await writeFiles(dir, { "img.bin": Buffer.from([0xfd, 0x00, 0x09]) });
   fake.files.set("img.bin", remote);
@@ -355,7 +359,7 @@ test("sync: preserves local edits made after scan but before push (pre-push race
 
   const fake = new FakeProvider();
   const { stash, dir } = await makeStash({ "doc.md": baseline }, { providers: fakeRegistry(fake) });
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
   await stash.sync();
 
   // Bob's change exists remotely before Alice starts this sync.
@@ -396,7 +400,7 @@ test("sync: preserves local edits made after push but before apply (post-push ra
 
   const fake = new FakeProvider();
   const { stash, dir } = await makeStash({ "doc.md": baseline }, { providers: fakeRegistry(fake) });
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
   await stash.sync();
 
   // Bob's change exists remotely before Alice starts this sync.
@@ -440,7 +444,7 @@ test("sync: drift retries are bounded and failed cycle does not apply/save", asy
 
   const fake = new FakeProvider();
   const { stash, dir } = await makeStash({ "doc.md": baseline }, { providers: fakeRegistry(fake) });
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
   await stash.sync();
 
   fake.files.set("doc.md", bobRemote);
@@ -468,7 +472,7 @@ test("sync: case-only rename syncs successfully", async () => {
     { "notes/Arabella.md": "hello" },
     { providers: fakeRegistry(fake) },
   );
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
   await stash.sync();
 
   // Rename to lowercase on disk (two-step for case-insensitive FS)
@@ -495,7 +499,7 @@ test("sync: case-only rename with content change syncs successfully", async () =
     { "notes/Arabella.md": "v1" },
     { providers: fakeRegistry(fake) },
   );
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
   await stash.sync();
 
   // Rename and change content
@@ -516,7 +520,7 @@ test("sync: case-only rename does not trigger drift retry", async () => {
     { "notes/Arabella.md": "hello" },
     { providers: fakeRegistry(fake) },
   );
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
   await stash.sync();
   fake.fetchCalls = 0;
 
@@ -536,7 +540,7 @@ test("sync: directory case rename applies correctly on pull", async () => {
     { "Notes/draft.md": "hello" },
     { providers: fakeRegistry(fake) },
   );
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
   await stash.sync();
 
   // Simulate remote rename: Notes/draft.md → notes/draft.md
@@ -562,7 +566,7 @@ test("sync: nested directory case rename applies correctly", async () => {
     { "Docs/Notes/draft.md": "hello" },
     { providers: fakeRegistry(fake) },
   );
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
   await stash.sync();
 
   // Simulate remote rename: Docs/Notes/ → docs/notes/
@@ -590,7 +594,7 @@ test("sync: true deletion still works alongside casing check", async () => {
     { "notes/Arabella.md": "hello", "other.md": "keep" },
     { providers: fakeRegistry(fake) },
   );
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
   await stash.sync();
 
   await unlink(join(dir, "notes", "Arabella.md"));

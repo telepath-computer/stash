@@ -86,7 +86,9 @@ export class Stash extends Emitter<StashEvents> {
   ): Promise<Stash> {
     const stashDir = join(dir, ".stash");
     if (!existsSync(stashDir)) {
-      throw new Error("This directory is not a stash. Run `stash connect <provider>` first.");
+      throw new Error(
+        "This directory is not a stash. Run `stash connect <provider> <name>` first.",
+      );
     }
 
     await ensureMigration(dir);
@@ -120,26 +122,23 @@ export class Stash extends Emitter<StashEvents> {
 
   get config(): Record<string, Record<string, string>> {
     const out: Record<string, Record<string, string>> = {};
-    const names = new Set([
-      ...Object.keys(this.globalConfig.providers),
-      ...Object.keys(this._connections),
-    ]);
-    for (const name of names) {
+    for (const [name, connection] of Object.entries(this._connections)) {
       out[name] = {
-        ...(this.globalConfig.providers[name] ?? {}),
-        ...(this._connections[name] ?? {}),
+        ...(this.globalConfig.providers[connection.provider] ?? {}),
+        ...connection,
       };
     }
     return out;
   }
 
-  async connect(provider: string, fields: Record<string, string>): Promise<void> {
-    this._connections[provider] = { ...fields };
+  async connect({ name, ...configFields }: { name: string } & ConnectionConfig): Promise<void> {
+    const { provider, ...fields } = configFields;
+    this._connections[name] = { provider, ...fields };
     await this.persistLocalConfig();
   }
 
-  async disconnect(provider: string): Promise<void> {
-    delete this._connections[provider];
+  async disconnect(name: string): Promise<void> {
+    delete this._connections[name];
     await this.persistLocalConfig();
   }
 
@@ -238,14 +237,20 @@ export class Stash extends Emitter<StashEvents> {
   }
 
   private buildProvider(name: string): Provider {
-    const providerClass = this.providerRegistry[name];
+    const connection = this._connections[name];
+    if (!connection) {
+      throw new Error(`Unknown connection: ${name}`);
+    }
+
+    const providerName = connection.provider;
+    const providerClass = this.providerRegistry[providerName];
     if (!providerClass) {
-      throw new Error(`Unknown provider: ${name}`);
+      throw new Error(`Unknown provider: ${providerName}`);
     }
 
     const config = {
-      ...(this.globalConfig.providers[name] ?? {}),
-      ...(this._connections[name] ?? {}),
+      ...(this.globalConfig.providers[providerName] ?? {}),
+      ...connection,
     };
     return new providerClass(config);
   }

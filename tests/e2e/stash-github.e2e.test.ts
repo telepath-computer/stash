@@ -177,7 +177,7 @@ test(
         },
       };
       const stashA = await Stash.init(machineA, globalConfig);
-      await stashA.connect("github", { repo: repo.fullName });
+      await stashA.connect({ name: "github", provider: "github", repo: repo.fullName });
       await syncWithRetry(stashA);
 
       assert.equal(await getRawFile(repo.fullName, "hello.md"), "hello");
@@ -185,7 +185,7 @@ test(
       assert.ok(await getRawFile(repo.fullName, ".stash/snapshot.json"));
 
       const stashB = await Stash.init(machineB, globalConfig);
-      await stashB.connect("github", { repo: repo.fullName });
+      await stashB.connect({ name: "github", provider: "github", repo: repo.fullName });
       await syncWithRetry(stashB);
 
       assert.equal(await readFile(join(machineB, "hello.md"), "utf8"), "hello");
@@ -222,11 +222,11 @@ test(
       await writeFile(join(machineA, "hello.md"), "line1\nline2\nline3", "utf8");
 
       const stashA = await Stash.init(machineA, globalConfig);
-      await stashA.connect("github", { repo: repo.fullName });
+      await stashA.connect({ name: "github", provider: "github", repo: repo.fullName });
       await syncWithRetry(stashA);
 
       const stashB = await Stash.init(machineB, globalConfig);
-      await stashB.connect("github", { repo: repo.fullName });
+      await stashB.connect({ name: "github", provider: "github", repo: repo.fullName });
       await syncWithRetry(stashB);
 
       await writeFile(join(machineA, "hello.md"), "LINE1\nline2\nline3", "utf8");

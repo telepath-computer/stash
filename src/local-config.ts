@@ -7,14 +7,15 @@ export type LocalConfig = {
   "allow-git"?: boolean;
 };
 
-function asStringRecord(value: unknown): Record<string, string> {
+function asConnectionConfig(value: unknown): ConnectionConfig | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return {};
+    return null;
   }
   const entries = Object.entries(value as Record<string, unknown>).filter(
     ([, fieldValue]) => typeof fieldValue === "string",
   );
-  return Object.fromEntries(entries) as Record<string, string>;
+  const config = Object.fromEntries(entries) as Record<string, string>;
+  return typeof config.provider === "string" ? (config as ConnectionConfig) : null;
 }
 
 export function normalizeLocalConfig(value: unknown): LocalConfig {
@@ -25,7 +26,10 @@ export function normalizeLocalConfig(value: unknown): LocalConfig {
       : {};
   const connections: Record<string, ConnectionConfig> = {};
   for (const [name, connectionConfig] of Object.entries(connectionsValue)) {
-    connections[name] = asStringRecord(connectionConfig);
+    const normalized = asConnectionConfig(connectionConfig);
+    if (normalized) {
+      connections[name] = normalized;
+    }
   }
 
   const allowGit = typeof raw["allow-git"] === "boolean" ? raw["allow-git"] : undefined;

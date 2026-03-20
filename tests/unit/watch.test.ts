@@ -190,7 +190,7 @@ test("watch: git safety error is rendered with retry guidance", async () => {
     { "hello.md": "hello" },
     { providers: fakeRegistry(fake) },
   );
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
   const stdin = new FakeInput();
   const stdout = new FakeOutput();
 

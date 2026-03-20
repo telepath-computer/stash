@@ -27,6 +27,15 @@ npm run test:vm -- e2e          # just e2e on VM
 npm run test:vm -- service      # just systemd service lifecycle on VM
 ```
 
+When running e2e or vm tests, always capture full output to a file so failure details are available without re-running:
+
+```bash
+npm run test:e2e 2>&1 | tee /tmp/stash-e2e.log
+npm run test:vm  2>&1 | tee /tmp/stash-vm.log
+```
+
+The e2e and vm suites hit the real GitHub API and are expensive. Re-running to see error details can trigger secondary rate limits. Always inspect the log file for `failureType` and `error:` lines before deciding whether to re-run.
+
 `npm run test:e2e` loads `.env` automatically via Node's `--env-file-if-exists=.env`. The VM script loads `.env` from the project root at startup.
 
 ## Test Layers
@@ -72,7 +81,6 @@ The VM test suite in `tests/vm/` provisions a DigitalOcean droplet, rsyncs the p
 - The droplet is destroyed after tests unless `VM_KEEP=1` is set.
 - The `service` mode tests `stash start`, `stash status --all`, and `stash stop` behavior against real systemd.
 
-Known issues with the service tests are documented in `tests/vm/KNOWN-ISSUES.md`.
 
 ## Docs Maintenance
 

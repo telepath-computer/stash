@@ -40,7 +40,7 @@ test("sync lock: lock acquired and released on successful sync", async () => {
     { "hello.md": "hello" },
     { providers: fakeRegistry(fake) },
   );
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
 
   await stash.sync();
   assert.equal(existsSync(lockPath(dir)), false);
@@ -52,7 +52,7 @@ test("sync lock: lock released when sync fails", async () => {
     { "hello.md": "hello" },
     { providers: fakeRegistry(fake) },
   );
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
 
   fake.push = async () => {
     throw new Error("push failed");
@@ -65,7 +65,7 @@ test("sync lock: lock released when sync fails", async () => {
 test("sync lock: SyncLockError when lock is held by another process", async () => {
   const fake = new FakeProvider();
   const { stash, dir } = await makeStash({}, { providers: fakeRegistry(fake) });
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
 
   await writeFile(lockPath(dir), lockPayload(new Date().toISOString()), "utf8");
   await assert.rejects(stash.sync(), SyncLockError);
@@ -77,7 +77,7 @@ test("sync lock: stale lock is reclaimed", async () => {
     { "hello.md": "hello" },
     { providers: fakeRegistry(fake) },
   );
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
 
   const stale = new Date(Date.now() - 15 * 60 * 1_000).toISOString();
   await writeFile(lockPath(dir), lockPayload(stale), "utf8");
@@ -91,7 +91,7 @@ test("sync lock: stale reclaim race throws SyncLockError", async () => {
     { "hello.md": "hello" },
     { providers: fakeRegistry(fake) },
   );
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
 
   const lock = lockPath(dir);
   const stale = new Date(Date.now() - 15 * 60 * 1_000).toISOString();
@@ -117,7 +117,7 @@ test("sync lock: in-process single flight throws SyncLockError", async () => {
     { "hello.md": "hello" },
     { providers: fakeRegistry(fake) },
   );
-  await stash.connect("fake", { repo: "r" });
+  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
 
   const originalPush = fake.push.bind(fake);
   fake.push = async (payload) => {

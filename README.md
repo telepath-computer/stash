@@ -13,7 +13,7 @@
 
 ```bash
 npm install -g @telepath-computer/stash
-cd dir-to-sync/ && stash connect github
+cd dir-to-sync/ && stash connect github origin
 stash start
 ```
 
@@ -28,7 +28,7 @@ The only sync endpoint right now is a GitHub repo. You'll need a personal access
 
 ```bash
 cd dir-to-sync/
-stash connect github
+stash connect github origin
 ```
 
 Stash will prompt for your repo and token (you'll only need to enter the token once). Then choose how to sync:
@@ -60,8 +60,10 @@ Use this token when running `stash setup github`. A classic token with the `repo
 
 | Command | Description |
 |---|---|
-| `stash connect <provider>` | Initialize a stash and connect a provider |
-| `stash disconnect` | Disconnect from providers and stop syncing |
+| `stash connect <provider> [name]` | Initialize a stash and add a named connection |
+| `stash disconnect <name>` | Disconnect one named connection |
+| `stash disconnect --all` | Disconnect the current stash completely |
+| `stash disconnect --path <path>` | Disconnect a stash by path |
 | `stash sync` | Sync once |
 | `stash watch` | Watch and sync continuously in the foreground |
 | `stash start` | Start background sync (resumes on restart) |

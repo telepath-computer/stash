@@ -310,7 +310,7 @@ export class Watch {
 
 export async function watch(stash: Stash, options: InteractiveWatchOptions = {}): Promise<void> {
   if (Object.keys(stash.connections).length === 0) {
-    throw new Error("no connection configured — run `stash connect <provider>` first");
+    throw new Error("no connection configured — run `stash connect <provider> <name>` first");
   }
 
   const dir = options.dir ?? process.cwd();

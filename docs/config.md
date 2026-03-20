@@ -35,7 +35,7 @@ Older prerelease stashes that still use `.stash/config.local.json` are migrated 
 
 It stores:
 
-- provider connection settings for this stash
+- named connection settings for this stash
 - per-stash safety and behavior flags
 
 Example:
@@ -44,10 +44,12 @@ Example:
 {
   "allow-git": true,
   "connections": {
-    "github": { "repo": "user/repo" }
+    "origin": { "provider": "github", "repo": "user/repo" }
   }
 }
 ```
+
+Each connection entry must include a `provider` field. Older prerelease configs that used the connection key as the provider name are migrated automatically by copying that key into the new `provider` field.
 
 Allowed per-stash keys today:
 

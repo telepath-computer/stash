@@ -24,7 +24,7 @@ test("ensureMigration: moves config.local.json to config.json", async () => {
     assert.equal(existsSync(join(dir, ".stash", "config.local.json")), false);
     assert.deepEqual(JSON.parse(await readFile(join(dir, ".stash", "config.json"), "utf8")), {
       connections: {
-        github: { repo: "user/repo" },
+        github: { provider: "github", repo: "user/repo" },
       },
     });
   } finally {
@@ -61,6 +61,54 @@ test("ensureMigration: no-ops when the new layout already exists", async () => {
 
     assert.equal(existsSync(join(dir, ".stash", "config.json")), true);
     assert.equal(existsSync(join(dir, ".stash", "snapshot")), true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureMigration: backfills provider when config.json connection is missing it", async () => {
+  const dir = await makeTempDir("migrate-provider");
+  try {
+    await mkdir(join(dir, ".stash"), { recursive: true });
+    await writeFile(
+      join(dir, ".stash", "config.json"),
+      JSON.stringify({ connections: { github: { repo: "user/repo" } } }, null, 2),
+      "utf8",
+    );
+
+    await ensureMigration(dir);
+
+    assert.deepEqual(JSON.parse(await readFile(join(dir, ".stash", "config.json"), "utf8")), {
+      connections: {
+        github: { provider: "github", repo: "user/repo" },
+      },
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureMigration: does not rewrite connections that already have a provider", async () => {
+  const dir = await makeTempDir("migrate-provider-noop");
+  try {
+    await mkdir(join(dir, ".stash"), { recursive: true });
+    await writeFile(
+      join(dir, ".stash", "config.json"),
+      JSON.stringify(
+        { connections: { origin: { provider: "github", repo: "user/repo" } } },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await ensureMigration(dir);
+
+    assert.deepEqual(JSON.parse(await readFile(join(dir, ".stash", "config.json"), "utf8")), {
+      connections: {
+        origin: { provider: "github", repo: "user/repo" },
+      },
+    });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -104,7 +152,7 @@ test("Stash.load migrates old config.local.json", async () => {
     const stash = await Stash.load(dir, { providers: {}, background: { stashes: [] } });
 
     assert.deepEqual(stash.connections, {
-      github: { repo: "user/repo" },
+      github: { provider: "github", repo: "user/repo" },
     });
     assert.equal(existsSync(join(dir, ".stash", "config.local.json")), false);
     assert.equal(existsSync(join(dir, ".stash", "config.json")), true);

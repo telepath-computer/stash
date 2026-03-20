@@ -52,7 +52,7 @@ export interface StatusResult {
   lastSync: Date | null;
 }
 
-export type ConnectionConfig = Record<string, string>;
+export type ConnectionConfig = { provider: string } & Record<string, string>;
 export type ProviderConfig = Record<string, Record<string, string>>;
 
 export interface BackgroundConfig {

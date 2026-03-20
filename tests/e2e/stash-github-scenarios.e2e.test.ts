@@ -3,7 +3,17 @@ import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -261,7 +271,7 @@ async function createMachine(
   globalConfig: GlobalConfig,
 ): Promise<Machine> {
   const stash = await Stash.init(dir, globalConfig);
-  await stash.connect("github", { repo });
+  await stash.connect({ name: "origin", provider: "github", repo });
   return { dir, stash };
 }
 
@@ -297,9 +307,13 @@ test("scenario 1: connect auto-inits stash and keeps existing files", E2E_OPTION
   const xdg = await makeTempDir("xdg");
   try {
     await writeFile(join(dir, "hello.md"), "hello", "utf8");
-    await runCli(dir, ["connect", "github", "--repo", "user/repo", "--token", "test-token"], {
-      XDG_CONFIG_HOME: xdg,
-    });
+    await runCli(
+      dir,
+      ["connect", "github", "origin", "--repo", "user/repo", "--token", "test-token"],
+      {
+        XDG_CONFIG_HOME: xdg,
+      },
+    );
     assert.equal(existsSync(join(dir, ".stash")), true);
     assert.equal(await readFile(join(dir, "hello.md"), "utf8"), "hello");
   } finally {
@@ -308,24 +322,32 @@ test("scenario 1: connect auto-inits stash and keeps existing files", E2E_OPTION
   }
 });
 
-test("scenario 2: reconnecting an existing stash does not duplicate registry entries", E2E_OPTIONS, async () => {
-  const dir = await makeTempDir("connect-reregister");
-  const xdg = await makeTempDir("xdg");
-  try {
-    await runCli(dir, ["connect", "github", "--repo", "user/repo", "--token", "test-token"], {
-      XDG_CONFIG_HOME: xdg,
-    });
-    await runCli(dir, ["connect", "github", "--repo", "user/repo"], {
-      XDG_CONFIG_HOME: xdg,
-    });
+test(
+  "scenario 2: adding another named connection does not duplicate registry entries",
+  E2E_OPTIONS,
+  async () => {
+    const dir = await makeTempDir("connect-reregister");
+    const xdg = await makeTempDir("xdg");
+    try {
+      await runCli(
+        dir,
+        ["connect", "github", "origin", "--repo", "user/repo", "--token", "test-token"],
+        {
+          XDG_CONFIG_HOME: xdg,
+        },
+      );
+      await runCli(dir, ["connect", "github", "backup", "--repo", "user/repo"], {
+        XDG_CONFIG_HOME: xdg,
+      });
 
-    const globalConfig = JSON.parse(await readFile(join(xdg, "stash", "config.json"), "utf8"));
-    assert.deepEqual(globalConfig.background?.stashes, [await realpath(dir)]);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-    await rm(xdg, { recursive: true, force: true });
-  }
-});
+      const globalConfig = JSON.parse(await readFile(join(xdg, "stash", "config.json"), "utf8"));
+      assert.deepEqual(globalConfig.background?.stashes, [await realpath(dir)]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+      await rm(xdg, { recursive: true, force: true });
+    }
+  },
+);
 
 test("scenario 3: setup stores provider credentials globally", E2E_OPTIONS, async () => {
   const dir = await makeTempDir("setup");
@@ -357,11 +379,13 @@ test("scenario 4: connect stores stash connection config", E2E_OPTIONS, async ()
     await runCli(dir, ["setup", "github", "--token", "test-token"], {
       XDG_CONFIG_HOME: xdg,
     });
-    await runCli(dir, ["connect", "github", "--repo", "user/repo"], {
+    await runCli(dir, ["connect", "github", "origin", "--repo", "user/repo"], {
       XDG_CONFIG_HOME: xdg,
     });
     const config = JSON.parse(await readFile(join(dir, ".stash", "config.json"), "utf8"));
-    assert.deepEqual(config, { connections: { github: { repo: "user/repo" } } });
+    assert.deepEqual(config, {
+      connections: { origin: { provider: "github", repo: "user/repo" } },
+    });
 
     const globalConfig = JSON.parse(await readFile(join(xdg, "stash", "config.json"), "utf8"));
     assert.deepEqual(globalConfig.background?.stashes, [await realpath(dir)]);
@@ -375,9 +399,13 @@ test("scenario 5: connect auto-writes setup config when missing", E2E_OPTIONS, a
   const dir = await makeTempDir("connect-autosetup");
   const xdg = await makeTempDir("xdg");
   try {
-    await runCli(dir, ["connect", "github", "--repo", "user/repo", "--token", "from-connect"], {
-      XDG_CONFIG_HOME: xdg,
-    });
+    await runCli(
+      dir,
+      ["connect", "github", "origin", "--repo", "user/repo", "--token", "from-connect"],
+      {
+        XDG_CONFIG_HOME: xdg,
+      },
+    );
 
     const globalConfig = JSON.parse(await readFile(join(xdg, "stash", "config.json"), "utf8"));
     assert.deepEqual(globalConfig, {
@@ -392,7 +420,7 @@ test("scenario 5: connect auto-writes setup config when missing", E2E_OPTIONS, a
     const localConfig = JSON.parse(await readFile(join(dir, ".stash", "config.json"), "utf8"));
     assert.deepEqual(localConfig, {
       connections: {
-        github: { repo: "user/repo" },
+        origin: { provider: "github", repo: "user/repo" },
       },
     });
   } finally {
@@ -409,10 +437,10 @@ test("scenario 6: disconnect removes connection and sync becomes no-op", E2E_OPT
     await runCli(dir, ["setup", "github", "--token", "test-token"], {
       XDG_CONFIG_HOME: xdg,
     });
-    await runCli(dir, ["connect", "github", "--repo", "user/repo"], {
+    await runCli(dir, ["connect", "github", "origin", "--repo", "user/repo"], {
       XDG_CONFIG_HOME: xdg,
     });
-    await runCli(dir, ["disconnect", "github"], { XDG_CONFIG_HOME: xdg });
+    await runCli(dir, ["disconnect", "origin"], { XDG_CONFIG_HOME: xdg });
 
     assert.equal(existsSync(join(dir, ".stash")), false);
 
@@ -453,7 +481,7 @@ test("scenario 8: first sync pulls remote files to empty local", E2E_OPTIONS, as
         stashes: [],
       },
     });
-    await stash.connect("github", { repo: repo.fullName });
+    await stash.connect({ name: "github", provider: "github", repo: repo.fullName });
     await syncWithRetry(stash);
 
     assert.equal(await readFile(join(machine, "readme.md"), "utf8"), "welcome");
@@ -485,7 +513,7 @@ test("scenario 8b: fresh stash pulls nested dirs from non-stash repo", E2E_OPTIO
         stashes: [],
       },
     });
-    await stash.connect("github", { repo: repo.fullName });
+    await stash.connect({ name: "github", provider: "github", repo: repo.fullName });
     await syncWithRetry(stash);
 
     assert.equal(await readFile(join(machine, "readme.md"), "utf8"), "hello");
@@ -563,7 +591,7 @@ test(
           stashes: [],
         },
       });
-      await stash.connect("github", { repo: repo.fullName });
+      await stash.connect({ name: "github", provider: "github", repo: repo.fullName });
       await syncWithRetry(stash);
 
       assert.equal(await readFile(join(machine, "shared.md"), "utf8"), "remote content");
@@ -955,7 +983,7 @@ test("scenario 26: status shows local changes since last sync", E2E_OPTIONS, asy
     assert.deepEqual(status.modified, ["hello.md"]);
     assert.deepEqual(status.deleted, ["old.md"]);
     assert.ok(status.lastSync instanceof Date);
-    assert.equal(setup.machineA.stash.connections.github.repo, setup.repo.fullName);
+    assert.equal(setup.machineA.stash.connections.origin.repo, setup.repo.fullName);
   } finally {
     if (setup) {
       await deleteRepo(setup.repo.fullName);
@@ -980,7 +1008,7 @@ test("scenario 27: status before first sync has null lastSync", E2E_OPTIONS, asy
         stashes: [],
       },
     });
-    await stash.connect("github", { repo: repo.fullName });
+    await stash.connect({ name: "github", provider: "github", repo: repo.fullName });
     const status = stash.status();
     assert.deepEqual(status.added, ["hello.md"]);
     assert.deepEqual(status.modified, []);
@@ -1085,7 +1113,7 @@ test(
           stashes: [],
         },
       });
-      await stash.connect("github", { repo: repo.fullName });
+      await stash.connect({ name: "github", provider: "github", repo: repo.fullName });
       await syncWithRetry(stash);
 
       assert.equal(await readFile(join(machine, "hello.md"), "utf8"), "hello");
@@ -1211,22 +1239,18 @@ test("e2e: daemon syncs a registered stash and writes status.json", E2E_OPTIONS,
     const xdgDir = await makeTempDir("daemon-e2e-xdg");
     dirs.push(dir, xdgDir);
 
-      const globalConfig: GlobalConfig = {
-        providers: { github: { token: token! } },
-        background: { stashes: [dir] },
-      };
+    const globalConfig: GlobalConfig = {
+      providers: { github: { token: token! } },
+      background: { stashes: [dir] },
+    };
 
-      const stash = await Stash.init(dir, globalConfig);
-      await stash.connect("github", { repo: repo.fullName });
-      await writeLocalFiles(dir, { "daemon-test.txt": "hello from daemon" });
+    const stash = await Stash.init(dir, globalConfig);
+    await stash.connect({ name: "github", provider: "github", repo: repo.fullName });
+    await writeLocalFiles(dir, { "daemon-test.txt": "hello from daemon" });
 
     const configDir = join(xdgDir, "stash");
     await mkdir(configDir, { recursive: true });
-    await writeFile(
-      join(configDir, "config.json"),
-      JSON.stringify(globalConfig, null, 2),
-      "utf8",
-    );
+    await writeFile(join(configDir, "config.json"), JSON.stringify(globalConfig, null, 2), "utf8");
 
     const daemon = spawn("node", [CLI_PATH, "daemon"], {
       env: { ...process.env, XDG_CONFIG_HOME: xdgDir },
@@ -1280,10 +1304,9 @@ test("e2e: daemon syncs a registered stash and writes status.json", E2E_OPTIONS,
     assert.ok(log.length > 0, "sync.log should not be empty");
 
     assert.equal(await remoteFileExists(repo.fullName, "daemon-test.txt"), true);
-      assert.equal(await readRemoteText(repo.fullName, "daemon-test.txt"), "hello from daemon");
-    } finally {
-      if (repo) await deleteRepo(repo.fullName);
-      await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
-    }
-  },
-);
+    assert.equal(await readRemoteText(repo.fullName, "daemon-test.txt"), "hello from daemon");
+  } finally {
+    if (repo) await deleteRepo(repo.fullName);
+    await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+  }
+});

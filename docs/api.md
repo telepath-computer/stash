@@ -54,8 +54,8 @@ class Stash extends Emitter<StashEvents> {
   get connections(): Record<string, ConnectionConfig>;
   get config(): Record<string, Record<string, string>>;
 
-  connect(provider: string, fields: Record<string, string>): Promise<void>;
-  disconnect(provider: string): Promise<void>;
+  connect(connection: { name: string } & ConnectionConfig): Promise<void>;
+  disconnect(name: string): Promise<void>;
   sync(): Promise<void>;
   status(): StatusResult;
 }
@@ -93,7 +93,7 @@ Loads an existing stash rooted at `dir`.
 - Throws if the directory is not already a stash.
 - Runs local metadata migrations first when older prerelease stash layouts are detected.
 - Uses the provided `globalConfig` plus local `.stash/config.json`.
-- The current error guidance points callers toward `stash connect <provider>`.
+- The current error guidance points callers toward `stash connect <provider> <name>`.
 
 ### `Stash.init()`
 
@@ -110,6 +110,8 @@ Ensures `.stash/` exists in `dir` and returns a loaded `Stash`.
 
 Returns the per-stash provider connection config exactly as stored locally.
 
+`ConnectionConfig` always includes a required `provider` field.
+
 ### `config`
 
 Returns the merged provider config view:
@@ -119,13 +121,13 @@ Returns the merged provider config view:
 
 This is useful for code that needs the effective provider configuration, not just the local portion.
 
-### `connect(provider, fields)`
+### `connect(connection)`
 
-Stores connection config for a provider in `.stash/config.json`.
+Stores named connection config in `.stash/config.json`.
 
-### `disconnect(provider)`
+### `disconnect(name)`
 
-Removes connection config for a provider from `.stash/config.json`.
+Removes connection config for a named connection from `.stash/config.json`.
 
 ### `sync()`
 

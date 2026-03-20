@@ -25,14 +25,14 @@ test("status: mixed changes and connections", async () => {
   );
 
   await writeFiles(dir, { "new.md": "draft" });
-  await stash.connect("github", { repo: "user/repo" });
+  await stash.connect({ name: "origin", provider: "github", repo: "user/repo" });
 
   const status = stash.status();
   assert.deepEqual(status.added, ["new.md"]);
   assert.deepEqual(status.modified, ["hello.md"]);
   assert.deepEqual(status.deleted, ["gone.md"]);
   assert.ok(status.lastSync instanceof Date);
-  assert.deepEqual(stash.connections, { github: { repo: "user/repo" } });
+  assert.deepEqual(stash.connections, { origin: { provider: "github", repo: "user/repo" } });
 });
 
 test("status: matching snapshot has no added/modified/deleted", async () => {

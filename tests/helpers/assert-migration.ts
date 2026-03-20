@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { ConnectionConfig, SnapshotEntry } from "../../src/types.ts";
+import type { SnapshotEntry } from "../../src/types.ts";
+
+type LegacyConnectionConfig = Record<string, string> & { provider?: string };
 
 type LegacyLayoutOptions = {
-  connections?: Record<string, ConnectionConfig>;
+  connections?: Record<string, LegacyConnectionConfig>;
   snapshot?: Record<string, SnapshotEntry>;
   snapshotLocal?: Record<string, string>;
   "allow-git"?: boolean;

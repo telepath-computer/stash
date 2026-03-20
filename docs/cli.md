@@ -16,44 +16,63 @@ stash setup github --token ghp_...
 
 If required fields are not provided on the command line, the CLI prompts for them. Secret fields are masked.
 
-### `stash connect <provider>`
+### `stash connect <provider> [name]`
 
-Initializes the current directory as a stash if needed, writes per-directory provider connection config, and registers the stash for background sync.
+Initializes the current directory as a stash if needed, writes per-directory named connection config, and registers the stash for background sync.
 
 Example:
 
 ```bash
 stash connect github --repo user/repo
+stash connect github origin --repo user/repo
 ```
+
+If `name` is omitted, stash uses the provider name as the connection name.
 
 If global setup fields are missing, `connect` collects and writes them before storing connection fields.
 
 Example output:
 
 ```text
-Connected github.
+Connected origin.
 ```
 
 If background sync is already running:
 
 ```text
-Connected github.
+Connected origin.
 Background sync is on · This stash is now syncing automatically
 ```
 
-### `stash disconnect`
-
-Disconnects the current stash completely.
-
-The CLI removes all provider connections, unregisters the stash from background sync, and removes `.stash/`.
+Connection names are unique within a stash. If the resolved name already exists, the command fails.
 
 If the directory contains `.git/` and per-stash config does not have `allow-git: true`, `connect` still succeeds but prints a warning explaining that sync is blocked until the user either removes `.git/` or runs `stash config set allow-git true`.
 
-### `stash disconnect <provider>`
+### `stash disconnect <name>`
 
-Removes the provider connection from `.stash/config.json`.
+Disconnects one named connection from the current stash.
 
-If that was the last remaining provider connection, the CLI also removes the stash from the global background registry and deletes `.stash/`.
+If that was the last remaining connection, the CLI also removes the stash from the global background registry and deletes `.stash/`.
+
+### `stash disconnect --all`
+
+Disconnects the current stash completely.
+
+The CLI removes all named connections, unregisters the stash from background sync, and removes `.stash/`.
+
+### `stash disconnect --path <path>`
+
+Disconnects a stash by path from anywhere.
+
+If the directory still exists, stash also removes `.stash/`. If the path is not registered, the command prints `No stash registered at that path.` and leaves global state unchanged.
+
+### `stash disconnect` with no arguments
+
+Fails with:
+
+```text
+argument required — run `stash disconnect <name>`, `stash disconnect --all`, or `stash disconnect --path <path>`
+```
 
 ### `stash config set <key> <value>`
 
@@ -158,14 +177,14 @@ If sync is blocked by git safety, watch shows the same error message and keeps r
 If no provider is connected, watch exits with:
 
 ```text
-No connection configured — run `stash connect <provider>` first
+No connection configured — run `stash connect <provider> <name>` first
 ```
 
 ### `stash status`
 
 Prints local status for the current stash.
 
-If the current stash is registered for background sync, the CLI prints the background sync state first, followed by a blank line, then provider connections with local `added`, `modified`, `deleted`, and `lastSync` status based on disk versus `snapshot.json`.
+If the current stash is registered for background sync, the CLI prints the background sync state first, followed by a blank line, then named connections with their provider type plus local `added`, `modified`, `deleted`, and `lastSync` status based on disk versus `snapshot.json`.
 
 If run outside a stash directory:
 
@@ -181,7 +200,7 @@ It shows:
 
 - whether background sync is running
 - each registered stash basename and path
-- the configured provider label for each stash
+- each connection name plus provider type
 - local pending changes and last sync time, or the current background error
 
 Example output:
@@ -191,11 +210,11 @@ Background sync is on · watching 2 stashes
 
 ● notes
   /Users/me/notes
-  github  user/notes · Up to date · synced 2m ago
+  origin (github) · Up to date · synced 2m ago
 
 ● work
   /Users/me/work
-  github  user/work · Local changes: 1 added, 2 modified · synced 5m ago
+  origin (github) · Local changes: 1 added, 2 modified · synced 5m ago
 ```
 
 ### Hidden: `stash daemon`

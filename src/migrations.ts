@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { rename } from "node:fs/promises";
 import { join } from "node:path";
 import { MigrationError } from "./errors.ts";
+import { readJsonFile, writeJsonFile } from "./utils/fs.ts";
 
 type Migration = {
   name: string;
@@ -60,10 +61,72 @@ const renameLocalMetadataLayoutMigration: Migration = {
   },
 };
 
-const migrations: Migration[] = [renameLocalMetadataLayoutMigration];
+const backfillConnectionProviderMigration: Migration = {
+  name: "backfill-connection-provider",
+  async check(dir: string): Promise<boolean> {
+    if (!hasPath(dir, NEW_LOCAL_CONFIG_PATH)) {
+      return false;
+    }
+    const config = await readJsonFile(resolvePath(dir, NEW_LOCAL_CONFIG_PATH), {});
+    const raw =
+      config && typeof config === "object" && !Array.isArray(config)
+        ? (config as Record<string, unknown>)
+        : {};
+    const connections =
+      raw.connections && typeof raw.connections === "object" && !Array.isArray(raw.connections)
+        ? (raw.connections as Record<string, unknown>)
+        : {};
+    return Object.values(connections).some(
+      (connection) =>
+        !connection ||
+        typeof connection !== "object" ||
+        Array.isArray(connection) ||
+        typeof (connection as Record<string, unknown>).provider !== "string",
+    );
+  },
+  async apply(dir: string): Promise<void> {
+    const path = resolvePath(dir, NEW_LOCAL_CONFIG_PATH);
+    const config = await readJsonFile(path, {});
+    const raw =
+      config && typeof config === "object" && !Array.isArray(config)
+        ? ({ ...config } as Record<string, unknown>)
+        : {};
+    const rawConnections =
+      raw.connections && typeof raw.connections === "object" && !Array.isArray(raw.connections)
+        ? (raw.connections as Record<string, unknown>)
+        : {};
+    const connections: Record<string, Record<string, unknown>> = {};
 
-export function needsMigration(dir: string): boolean {
-  return migrations.some((migration) => migration.check(dir));
+    for (const [name, connection] of Object.entries(rawConnections)) {
+      const record =
+        connection && typeof connection === "object" && !Array.isArray(connection)
+          ? ({ ...(connection as Record<string, unknown>) } as Record<string, unknown>)
+          : {};
+      if (typeof record.provider !== "string") {
+        record.provider = name;
+      }
+      connections[name] = record;
+    }
+
+    await writeJsonFile(path, {
+      ...raw,
+      connections,
+    });
+  },
+};
+
+const migrations: Migration[] = [
+  renameLocalMetadataLayoutMigration,
+  backfillConnectionProviderMigration,
+];
+
+export async function needsMigration(dir: string): Promise<boolean> {
+  for (const migration of migrations) {
+    if (await migration.check(dir)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export async function ensureMigration(dir: string): Promise<void> {
