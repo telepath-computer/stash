@@ -24,18 +24,16 @@ cd dir-to-sync/
 stash connect github
 ```
 
-Stash will prompt for your repo, and a GitHub token if this is your first time (see below to get one).
+Follow the propmts to enter your repo & GitHub token (see below).
 
-Then choose how to sync:
+Then, start syncing!
 
 ```bash
-stash sync          # Sync once
-stash watch         # Watch and sync continuously in the foreground
-stash start         # Sync all stashes in the background
+stash start
 ```
 
 > [!TIP]
-> Run `stash start` once and forget about it — stash will keep your directories in sync in the background, even across restarts.
+> Run `stash start` once and forget about it — stash will keep all your stashes in sync in the background, even across restarts.
 
 ### Creating a GitHub token
 
