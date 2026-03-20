@@ -183,8 +183,8 @@ test("connect warns when git repository syncing is still blocked", async () => {
   }
 });
 
-test("connecting another named connection is a registry no-op", async () => {
-  const dir = await makeTempDir("stash-cli-connect-reregister");
+test("connecting a second named connection is rejected", async () => {
+  const dir = await makeTempDir("stash-cli-connect-multi");
 
   try {
     const first = await runMain(dir, [
@@ -196,21 +196,15 @@ test("connecting another named connection is a registry no-op", async () => {
       "--repo",
       "user/repo",
     ]);
-    const second = await runMain(
+    const error = await runMain(
       dir,
-      ["connect", "github", "backup", "--token", "test-token", "--repo", "user/repo"],
+      ["connect", "github", "backup", "--token", "test-token", "--repo", "user/other"],
       {
         config: first.config,
       },
-    );
-    assert.deepEqual(second.config, {
-      providers: {
-        github: { token: "test-token" },
-      },
-      background: {
-        stashes: [resolve(dir)],
-      },
-    });
+    ).catch((e: Error) => e);
+    assert.ok(error instanceof Error);
+    assert.equal(error.message.includes("multiple connections are not yet supported"), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

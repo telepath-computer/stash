@@ -125,6 +125,36 @@ test("cli connect errors when the default connection name is already taken", asy
   }
 });
 
+test("cli connect errors when adding a second connection with a different name", async () => {
+  const dir = await makeTempDir("cli-connect-multi");
+  try {
+    await runCli(dir, [
+      "connect",
+      "github",
+      "origin",
+      "--token",
+      "test-token",
+      "--repo",
+      "user/repo",
+    ]);
+
+    const result = await execFileAsync(
+      "node",
+      [CLI_PATH, "connect", "github", "backup", "--repo", "user/other"],
+      {
+        cwd: dir,
+        env: { ...process.env, XDG_CONFIG_HOME: join(dir, ".xdg") },
+      },
+    ).catch((error) => error as { stdout: string; stderr: string; code: number });
+
+    assert.equal(result.code, 1);
+    const combined = (result.stdout ?? "") + (result.stderr ?? "");
+    assert.equal(combined.includes("multiple connections are not yet supported"), true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("cli config set/get stores allowed stash settings", async () => {
   const dir = await makeTempDir("cli-config");
   try {

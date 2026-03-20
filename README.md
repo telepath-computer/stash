@@ -31,7 +31,7 @@ cd dir-to-sync/
 stash connect github origin
 ```
 
-Stash will prompt for your repo and token (you'll only need to enter the token once). Then choose how to sync:
+Stash will prompt for your repo and token (you'll only need to enter the token once). Each stash currently supports a single connection — to change providers or repos, disconnect first with `stash disconnect`. Then choose how to sync:
 
 ```bash
 stash sync          # Sync once

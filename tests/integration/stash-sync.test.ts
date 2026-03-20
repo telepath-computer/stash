@@ -4,7 +4,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { hashBuffer } from "../../src/utils/hash.ts";
-import { GitRepoError, PushConflictError, SyncLockError } from "../../src/errors.ts";
+import { GitRepoError, MultipleConnectionsError, PushConflictError, SyncLockError } from "../../src/errors.ts";
 import { FakeProvider } from "../helpers/fake-provider.ts";
 import { makeStash, writeFiles } from "../helpers/make-stash.ts";
 
@@ -263,6 +263,27 @@ test("sync: git repository without allow-git throws", async () => {
   await mkdir(join(dir, ".git"), { recursive: true });
 
   await assert.rejects(stash.sync(), GitRepoError);
+  assert.equal(fake.fetchCalls, 0);
+  assert.equal(fake.pushCalls, 0);
+});
+
+test("sync: multiple connections throws", async () => {
+  const fake = new FakeProvider();
+  const { stash, dir } = await makeStash(
+    { "hello.md": "hello" },
+    { providers: fakeRegistry(fake) },
+  );
+  await stash.connect({ name: "first", provider: "fake", repo: "r1" });
+  // Bypass the connect guard by writing a second connection directly
+  const configPath = join(dir, ".stash", "config.json");
+  const config = JSON.parse(await readFile(configPath, "utf8"));
+  config.connections.second = { provider: "fake", repo: "r2" };
+  await writeFile(configPath, JSON.stringify(config, null, 2), "utf8");
+  // Reload to pick up both connections
+  const { Stash } = await import("../../src/stash.ts");
+  const reloaded = await Stash.load(dir, { providers: {}, background: { stashes: [] } }, { providers: fakeRegistry(fake) });
+
+  await assert.rejects(reloaded.sync(), MultipleConnectionsError);
   assert.equal(fake.fetchCalls, 0);
   assert.equal(fake.pushCalls, 0);
 });

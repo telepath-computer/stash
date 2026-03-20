@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { MultipleConnectionsError } from "../../src/errors.ts";
 import { makeStash } from "../helpers/make-stash.ts";
 
 test("integration config: connect writes config.json", async () => {
@@ -21,6 +22,23 @@ test("integration config: disconnect removes connection", async () => {
   await stash.disconnect("origin");
   const config = JSON.parse(await readFile(join(dir, ".stash", "config.json"), "utf8"));
   assert.deepEqual(config, { connections: {} });
+});
+
+test("integration config: connect rejects a second connection with a different name", async () => {
+  const { stash } = await makeStash();
+  await stash.connect({ name: "origin", provider: "github", repo: "user/repo" });
+  await assert.rejects(
+    stash.connect({ name: "backup", provider: "github", repo: "user/other" }),
+    MultipleConnectionsError,
+  );
+});
+
+test("integration config: connect allows reconnecting the same name", async () => {
+  const { stash, dir } = await makeStash();
+  await stash.connect({ name: "origin", provider: "github", repo: "user/repo" });
+  await stash.connect({ name: "origin", provider: "github", repo: "user/updated" });
+  const config = JSON.parse(await readFile(join(dir, ".stash", "config.json"), "utf8"));
+  assert.deepEqual(config.connections.origin, { provider: "github", repo: "user/updated" });
 });
 
 test("integration config: config getter merges global and local by provider type", async () => {

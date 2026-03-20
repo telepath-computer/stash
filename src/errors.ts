@@ -21,6 +21,15 @@ export class GitRepoError extends Error {
   }
 }
 
+export class MultipleConnectionsError extends Error {
+  constructor(
+    message = "multiple connections are not yet supported — disconnect the existing connection before adding a new one",
+  ) {
+    super(message);
+    this.name = "MultipleConnectionsError";
+  }
+}
+
 export class MigrationError extends Error {
   constructor(message: string) {
     super(message);

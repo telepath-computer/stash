@@ -18,7 +18,7 @@ import { hostname } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Emitter } from "./emitter.ts";
-import { GitRepoError, PushConflictError, SyncLockError } from "./errors.ts";
+import { GitRepoError, MultipleConnectionsError, PushConflictError, SyncLockError } from "./errors.ts";
 import { normalizeGlobalConfig } from "./global-config.ts";
 import { getLocalConfigPath, readLocalConfig, writeLocalConfig } from "./local-config.ts";
 import { ensureMigration } from "./migrations.ts";
@@ -133,6 +133,10 @@ export class Stash extends Emitter<StashEvents> {
 
   async connect({ name, ...configFields }: { name: string } & ConnectionConfig): Promise<void> {
     const { provider, ...fields } = configFields;
+    const existing = Object.keys(this._connections);
+    if (existing.length >= 1 && !existing.includes(name)) {
+      throw new MultipleConnectionsError();
+    }
     this._connections[name] = { provider, ...fields };
     await this.persistLocalConfig();
   }
@@ -158,6 +162,9 @@ export class Stash extends Emitter<StashEvents> {
       const connectionNames = Object.keys(this._connections);
       if (connectionNames.length === 0) {
         return;
+      }
+      if (connectionNames.length > 1) {
+        throw new MultipleConnectionsError();
       }
 
       for (const name of connectionNames) {
