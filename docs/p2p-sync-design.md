@@ -94,12 +94,22 @@ The internal plumbing changes: `Stash` loads `sync/<connection>/snapshot.json` a
 
 ## What a Computer Provider Looks Like
 
-A computer provider connects to another machine running a stash daemon. The daemon exposes a small local API (HTTP over a Unix socket, or SSH, etc.). The provider is thin:
+A stash directory is already isomorphic with a GitHub repo in structure: files in the root, metadata in `.stash/`. A computer provider reads from both:
+
+```
+remote-machine/my-stash/
+├── notes.md              ← actual files (stash root = the file store)
+├── images/photo.png
+└── .stash/
+    └── snapshot.json     ← the manifest
+```
+
+This is identical to what a GitHub repo holds — the root is the file store, `.stash/snapshot.json` is the index. The computer provider reads the manifest from `.stash/` and actual file bytes from the stash root.
 
 ```ts
 class ComputerProvider implements Provider {
   static spec: ProviderSpec = {
-    setup: [],                          // no global credentials
+    setup: [],
     connect: [
       { name: "host", label: "Host (user@hostname or IP)" },
       { name: "path", label: "Remote stash path" },
@@ -107,28 +117,49 @@ class ComputerProvider implements Provider {
   };
 
   async fetch(localSnapshot?: Record<string, SnapshotEntry>): Promise<ChangeSet> {
-    // 1. Read remote machine's .stash/snapshot.json (the generic snapshot).
+    // 1. Read remote's .stash/snapshot.json (the generic snapshot).
     // 2. Diff against localSnapshot (our per-connection last-sync snapshot).
-    // 3. Fetch text content for changed text files.
+    // 3. Fetch text content from remote stash root for changed text files.
     // 4. Return ChangeSet.
   }
 
   async get(path: string): Promise<Readable> {
-    // Stream one file from the remote machine's stash directory.
+    // Stream the file directly from the remote stash root.
   }
 
   async push(payload: PushPayload): Promise<void> {
-    // 1. Write payload.files to the remote machine.
-    // 2. Delete payload.deletions from the remote machine.
-    // 3. Write payload.snapshot as the remote's .stash/snapshot.json.
-    //    This is an atomic replace — the remote machine's generic snapshot
-    //    now reflects the agreed state.
-    // 4. If the remote's snapshot changed since fetch(), throw PushConflictError.
+    // 1. Write payload.files into the remote stash root.
+    // 2. Delete payload.deletions from the remote stash root.
+    // 3. Atomically replace remote's .stash/snapshot.json with payload.snapshot.
+    // 4. If the snapshot changed since fetch(), throw PushConflictError.
   }
 }
 ```
 
-The remote machine's daemon doesn't need to understand P2P; it just needs to serve its `.stash/snapshot.json` and file contents, and accept atomic writes to its stash directory. The connecting machine's stash engine drives all the logic.
+### Atomicity
+
+GitHub gives a consistent point-in-time view because a commit is a snapshot. When a peer reads a live stash directory, files can change mid-fetch — the manifest and the bytes may be momentarily out of sync.
+
+Three options, in order of increasing complexity:
+
+**Option 1 — Accept races, rely on hash verification.** The provider verifies each fetched file's hash against the snapshot. On mismatch it throws `PushConflictError`; stash retries. This is free and works well for most machines with moderate write rates.
+
+**Option 2 — Content-addressed object store.** After each sync, hard-link (or copy) committed files into `.stash/objects/<hash>`. Peers fetch stable blobs from the object store, not the live filesystem. Atomicity guaranteed; no drift possible. Hard-linking makes this nearly free on the same filesystem.
+
+```
+.stash/
+├── snapshot.json
+├── objects/
+│   ├── sha256-abc123     ← stable blob, hard-linked from stash root
+│   └── sha256-def456
+└── sync/
+    └── <connection>/
+        └── snapshot.json
+```
+
+**Option 3 — Atomic bundle.** Write a single immutable snapshot bundle into `.stash/` after each sync. Good for slow/unreliable links; wasteful for large stashes with small diffs.
+
+**Recommendation:** Start with Option 1. The existing `PushConflictError` + retry loop already handles races. Add Option 2 if hash mismatches become a real problem in practice on busy machines.
 
 ## Multi-Connection Correctness
 
