@@ -1,3 +1,4 @@
+import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { GlobalConfig } from "./types.ts";
@@ -38,12 +39,39 @@ export function normalizeGlobalConfig(value: unknown): GlobalConfig {
   };
 }
 
-export function getGlobalConfigPath(): string {
+export function getStashPath(): string {
   const xdg = process.env.XDG_CONFIG_HOME;
   if (xdg) {
-    return join(xdg, "stash", "config.json");
+    return join(xdg, "stash");
   }
-  return join(homedir(), ".stash", "config.json");
+  return join(homedir(), ".stash");
+}
+
+export function getGlobalConfigPath(): string {
+  return join(getStashPath(), "config.json");
+}
+
+export function getStashDirPath(id: string): string {
+  return join(getStashPath(), id);
+}
+
+export async function ensureStashPath(): Promise<string> {
+  const stashPath = getStashPath();
+  await mkdir(stashPath, { recursive: true, mode: 0o700 });
+  return stashPath;
+}
+
+export async function ensureStashDirPath(id: string): Promise<string> {
+  const stashDir = getStashDirPath(id);
+  await ensureStashPath();
+  await mkdir(stashDir, { recursive: true, mode: 0o700 });
+  return stashDir;
+}
+
+function serializeGlobalConfig(config: GlobalConfig): Pick<GlobalConfig, "providers"> {
+  return {
+    providers: normalizeGlobalConfig(config).providers,
+  };
 }
 
 export async function readGlobalConfig(): Promise<GlobalConfig> {
@@ -51,7 +79,8 @@ export async function readGlobalConfig(): Promise<GlobalConfig> {
 }
 
 export async function writeGlobalConfig(config: GlobalConfig): Promise<void> {
-  await writeJsonFile(getGlobalConfigPath(), normalizeGlobalConfig(config));
+  await ensureStashPath();
+  await writeJsonFile(getGlobalConfigPath(), serializeGlobalConfig(config), { mode: 0o600 });
 }
 
 export function getBackgroundStashes(config: GlobalConfig): string[] {
