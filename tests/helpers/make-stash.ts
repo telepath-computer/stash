@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { normalizeGlobalConfig } from "../../src/global-config.ts";
+import { getStashDirPath, normalizeGlobalConfig } from "../../src/global-config.ts";
 import { Stash } from "../../src/stash.ts";
 import type { GlobalConfig, ProviderClass, SnapshotEntry } from "../../src/types.ts";
 
@@ -31,14 +31,24 @@ export async function makeStash(
   },
 ): Promise<{ stash: Stash; dir: string }> {
   const dir = await makeTempDir();
+  const stashPath = join(dir, ".xdg", "stash");
   const globalConfig = normalizeGlobalConfig(opts?.globalConfig ?? {});
   if (files) {
     await writeFiles(dir, files);
   }
 
-  await Stash.init(dir, globalConfig, {
-    providers: opts?.providers,
-  });
+  const stash = await Stash.create(
+    {
+      path: dir,
+      connections: [],
+    },
+    globalConfig,
+    {
+      providers: opts?.providers,
+      stashPath,
+    },
+  );
+  await symlink(getStashDirPath(stash.id, stashPath), join(dir, ".stash"), "dir");
 
   if (opts?.snapshot) {
     await writeFile(
@@ -56,8 +66,9 @@ export async function makeStash(
     }
   }
 
-  const loaded = await Stash.load(dir, globalConfig, {
+  const loaded = await Stash.load(stash.id, globalConfig, {
     providers: opts?.providers,
+    stashPath,
   });
   return { stash: loaded, dir };
 }

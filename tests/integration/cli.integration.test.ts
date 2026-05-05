@@ -3,45 +3,48 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertMigration, writeLegacyLayout } from "../helpers/assert-migration.ts";
 import { makeTempDir } from "../helpers/make-stash.ts";
 
 const execFileAsync = promisify(execFile);
 const CLI_PATH = fileURLToPath(new URL("../../src/cli.ts", import.meta.url));
 
+function getTestStashPath(dir: string): string {
+  return join(dir, ".xdg", "stash");
+}
+
 async function runCli(
   cwd: string,
   args: string[],
-  env?: Record<string, string>,
 ): Promise<{ stdout: string; stderr: string }> {
   return execFileAsync("node", [CLI_PATH, ...args], {
     cwd,
-    env: { ...process.env, XDG_CONFIG_HOME: join(cwd, ".xdg"), ...(env ?? {}) },
+    env: { ...process.env, XDG_CONFIG_HOME: join(cwd, ".xdg") },
   });
 }
 
-test("cli connect auto-inits the stash directory", async () => {
-  const dir = await makeTempDir("cli-connect-init");
-  try {
-    const result = await runCli(dir, [
-      "connect",
-      "github",
-      "origin",
-      "--token",
-      "test-token",
-      "--repo",
-      "user/repo",
-    ]);
+async function listStashIds(stashPath: string): Promise<string[]> {
+  if (!existsSync(stashPath)) {
+    return [];
+  }
+  return (await readdir(stashPath)).filter((entry) => !entry.startsWith(".") && entry !== "config.json");
+}
 
-    assert.equal(existsSync(join(dir, ".stash")), true);
-    assert.equal(result.stdout.includes("Connected origin."), true);
-    const config = JSON.parse(await readFile(join(dir, ".stash", "config.json"), "utf8"));
+test("cli setup stores provider globals in ~/.stash/config.json", async () => {
+  const dir = await makeTempDir("cli-setup-global");
+
+  try {
+    const result = await runCli(dir, ["setup", "github", "--token", "test-token"]);
+
+    assert.equal(result.stdout.includes("Configured github."), true);
+    const config = JSON.parse(await readFile(join(getTestStashPath(dir), "config.json"), "utf8"));
     assert.deepEqual(config, {
-      connections: {
-        origin: { provider: "github", repo: "user/repo" },
+      providers: {
+        github: {
+          token: "test-token",
+        },
       },
     });
   } finally {
@@ -49,289 +52,153 @@ test("cli connect auto-inits the stash directory", async () => {
   }
 });
 
-test("cli connect defaults the connection name to the provider when omitted", async () => {
-  const dir = await makeTempDir("cli-connect-default-name");
-  try {
-    const result = await runCli(dir, [
-      "connect",
-      "github",
-      "--token",
-      "test-token",
-      "--repo",
-      "user/repo",
-    ]);
+test("cli connect creates registry metadata without a local .stash directory", async () => {
+  const dir = await makeTempDir("cli-connect-uri");
 
-    assert.equal(result.stdout.includes("Connected github."), true);
-    const config = JSON.parse(await readFile(join(dir, ".stash", "config.json"), "utf8"));
-    assert.deepEqual(config, {
-      connections: {
-        github: { provider: "github", repo: "user/repo" },
-      },
+  try {
+    const result = await runCli(dir, ["connect", "github:user/repo", "--token", "test-token"]);
+    const canonicalDir = await realpath(dir);
+
+    assert.equal(result.stdout.includes(`Connected github:user/repo to ${canonicalDir}.`), true);
+    assert.equal(existsSync(join(dir, ".stash")), false);
+
+    const ids = await listStashIds(getTestStashPath(dir));
+    assert.equal(ids.length, 1);
+    const record = JSON.parse(
+      await readFile(join(getTestStashPath(dir), ids[0], "stash.json"), "utf8"),
+    ) as { path: string; connections: Array<{ provider: string; config: { id: string } }> };
+    assert.deepEqual(record, {
+      path: await realpath(dir),
+      connections: [{ provider: "github", config: { id: "user/repo" } }],
     });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("cli connect errors when the connection name already exists", async () => {
-  const dir = await makeTempDir("cli-connect-duplicate");
+test("cli connect accepts an explicit path argument", async () => {
+  const dir = await makeTempDir("cli-connect-explicit");
+  const target = await makeTempDir("cli-connect-target");
+
   try {
-    await runCli(dir, [
-      "connect",
-      "github",
-      "origin",
-      "--token",
-      "test-token",
-      "--repo",
-      "user/repo",
-    ]);
+    const result = await runCli(dir, ["connect", target, "github:user/repo", "--token", "test-token"]);
+    const canonicalTarget = await realpath(target);
 
-    const result = await execFileAsync(
-      "node",
-      [CLI_PATH, "connect", "github", "origin", "--repo", "user/other-repo"],
-      {
-        cwd: dir,
-        env: { ...process.env, XDG_CONFIG_HOME: join(dir, ".xdg") },
-      },
-    ).catch((error) => error as { stdout: string; stderr: string; code: number });
+    assert.equal(result.stdout.includes(`Connected github:user/repo to ${canonicalTarget}.`), true);
+    const ids = await listStashIds(getTestStashPath(dir));
+    assert.equal(ids.length, 1);
+    const record = JSON.parse(
+      await readFile(join(getTestStashPath(dir), ids[0], "stash.json"), "utf8"),
+    ) as { path: string };
+    assert.equal(record.path, await realpath(target));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+    await rm(target, { recursive: true, force: true });
+  }
+});
 
-    assert.equal(result.code, 1);
-    const combined = (result.stdout ?? "") + (result.stderr ?? "");
-    assert.equal(combined.includes("Connection already exists: origin"), true);
+test("cli disconnect tombstones the stash record", async () => {
+  const dir = await makeTempDir("cli-disconnect");
+
+  try {
+    await runCli(dir, ["connect", "github:user/repo", "--token", "test-token"]);
+    const [id] = await listStashIds(getTestStashPath(dir));
+    const canonicalDir = await realpath(dir);
+
+    const result = await runCli(dir, ["disconnect"]);
+
+    assert.equal(result.stdout.includes(`Disconnected github:user/repo from ${canonicalDir}.`), true);
+    const record = JSON.parse(
+      await readFile(join(getTestStashPath(dir), id, "stash.json"), "utf8"),
+    ) as { connections: unknown[] };
+    assert.deepEqual(record.connections, []);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("cli connect errors when the default connection name is already taken", async () => {
-  const dir = await makeTempDir("cli-connect-default-duplicate");
+test("cli relink rewrites the canonical path stored in stash.json", async () => {
+  const dir = await makeTempDir("cli-relink-old");
+  const moved = await makeTempDir("cli-relink-new");
+
   try {
-    await runCli(dir, ["connect", "github", "--token", "test-token", "--repo", "user/repo"]);
+    await runCli(dir, ["connect", "github:user/repo", "--token", "test-token"]);
+    const [id] = await listStashIds(getTestStashPath(dir));
+    const canonicalDir = await realpath(dir);
+    const canonicalMoved = await realpath(moved);
 
-    const result = await execFileAsync(
-      "node",
-      [CLI_PATH, "connect", "github", "--repo", "user/other-repo"],
-      {
-        cwd: dir,
-        env: { ...process.env, XDG_CONFIG_HOME: join(dir, ".xdg") },
-      },
-    ).catch((error) => error as { stdout: string; stderr: string; code: number });
+    const result = await runCli(dir, ["relink", dir, moved]);
 
-    assert.equal(result.code, 1);
-    const combined = (result.stdout ?? "") + (result.stderr ?? "");
-    assert.equal(combined.includes("Connection already exists: github"), true);
+    assert.equal(result.stdout.includes(`Relinked ${canonicalDir} -> ${canonicalMoved}.`), true);
+    const record = JSON.parse(
+      await readFile(join(getTestStashPath(dir), id, "stash.json"), "utf8"),
+    ) as { path: string };
+    assert.equal(record.path, await realpath(moved));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+    await rm(moved, { recursive: true, force: true });
+  }
+});
+
+test("cli status prints registered stashes from the registry root", async () => {
+  const dir = await makeTempDir("cli-status");
+  const stashPath = getTestStashPath(dir);
+
+  try {
+    await runCli(dir, ["connect", "github:user/repo", "--token", "test-token"]);
+    const [id] = await listStashIds(stashPath);
+    await writeFile(
+      join(stashPath, id, "status.json"),
+      JSON.stringify(
+        {
+          kind: "idle",
+          lastSync: "2026-03-11T14:30:00.000Z",
+          summary: null,
+          error: null,
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const result = await runCli(dir, ["status"]);
+
+    assert.equal(result.stdout.includes("Daemon:"), true);
+    assert.equal(result.stdout.includes(await realpath(dir)), true);
+    assert.equal(result.stdout.includes("github:user/repo"), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("cli connect errors when adding a second connection with a different name", async () => {
-  const dir = await makeTempDir("cli-connect-multi");
-  try {
-    await runCli(dir, [
-      "connect",
-      "github",
-      "origin",
-      "--token",
-      "test-token",
-      "--repo",
-      "user/repo",
-    ]);
+test("cli connect blocks git repos unless --dangerously-allow-git is passed", async () => {
+  const dir = await makeTempDir("cli-connect-git");
 
-    const result = await execFileAsync(
-      "node",
-      [CLI_PATH, "connect", "github", "backup", "--repo", "user/other"],
-      {
-        cwd: dir,
-        env: { ...process.env, XDG_CONFIG_HOME: join(dir, ".xdg") },
-      },
-    ).catch((error) => error as { stdout: string; stderr: string; code: number });
-
-    assert.equal(result.code, 1);
-    const combined = (result.stdout ?? "") + (result.stderr ?? "");
-    assert.equal(combined.includes('already has connection "origin"'), true);
-    assert.equal(combined.includes("stash disconnect origin"), true);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("cli config set/get stores allowed stash settings", async () => {
-  const dir = await makeTempDir("cli-config");
-  try {
-    await runCli(dir, [
-      "connect",
-      "github",
-      "origin",
-      "--token",
-      "test-token",
-      "--repo",
-      "user/repo",
-    ]);
-    await runCli(dir, ["config", "set", "allow-git", "true"]);
-
-    const config = JSON.parse(await readFile(join(dir, ".stash", "config.json"), "utf8"));
-    assert.deepEqual(config, {
-      "allow-git": true,
-      connections: {
-        origin: { provider: "github", repo: "user/repo" },
-      },
-    });
-
-    const result = await runCli(dir, ["config", "get", "allow-git"]);
-    assert.equal(result.stdout.trim(), "true");
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("cli config get prints nothing when value is unset", async () => {
-  const dir = await makeTempDir("cli-config-empty");
-  try {
-    await runCli(dir, [
-      "connect",
-      "github",
-      "origin",
-      "--token",
-      "test-token",
-      "--repo",
-      "user/repo",
-    ]);
-
-    const result = await runCli(dir, ["config", "get", "allow-git"]);
-    assert.equal(result.stdout.trim(), "");
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("cli config set rejects unknown keys", async () => {
-  const dir = await makeTempDir("cli-config-unknown");
-  try {
-    await runCli(dir, [
-      "connect",
-      "github",
-      "origin",
-      "--token",
-      "test-token",
-      "--repo",
-      "user/repo",
-    ]);
-
-    const result = await execFileAsync("node", [CLI_PATH, "config", "set", "unknown-key", "true"], {
-      cwd: dir,
-      env: { ...process.env, XDG_CONFIG_HOME: join(dir, ".xdg") },
-    }).catch((error) => error as { stdout: string; stderr: string; code: number });
-
-    assert.equal(result.code, 1);
-    const combined = (result.stdout ?? "") + (result.stderr ?? "");
-    assert.equal(combined.includes("Unknown config key"), true);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("cli config commands require an initialized stash", async () => {
-  const dir = await makeTempDir("cli-config-missing");
-  try {
-    const result = await execFileAsync("node", [CLI_PATH, "config", "set", "allow-git", "true"], {
-      cwd: dir,
-      env: { ...process.env, XDG_CONFIG_HOME: join(dir, ".xdg") },
-    }).catch((error) => error as { stdout: string; stderr: string; code: number });
-
-    assert.equal(result.code, 1);
-    const combined = (result.stdout ?? "") + (result.stderr ?? "");
-    assert.equal(combined.includes("not a stash"), true);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("cli config get migrates the legacy local stash layout", async () => {
-  const dir = await makeTempDir("cli-config-migration");
-  try {
-    await writeLegacyLayout(dir, {
-      connections: {},
-      snapshotLocal: { "note.md": "base" },
-    });
-
-    const result = await runCli(dir, ["config", "get", "allow-git"]);
-    assert.equal(result.stdout.trim(), "");
-
-    await assertMigration(dir, {
-      connections: {},
-      snapshotLocal: { "note.md": "base" },
-    });
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("cli sync failure sets exit code 1 and prints error once", async () => {
-  const dir = await makeTempDir("cli-sync-fail");
-  try {
-    const result = await execFileAsync("node", [CLI_PATH, "sync"], {
-      cwd: dir,
-      env: { ...process.env, XDG_CONFIG_HOME: join(dir, ".xdg") },
-    }).catch((error) => error as { stdout: string; stderr: string; code: number });
-
-    assert.equal(result.code, 1, "process should exit with code 1");
-
-    const combined = (result.stdout ?? "") + (result.stderr ?? "");
-    const errorOccurrences = combined.split("sync failed").length - 1;
-    assert.equal(errorOccurrences <= 1, true, `error should appear at most once, got: ${combined}`);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("cli sync in a git repository prints the allow-git guidance", async () => {
-  const dir = await makeTempDir("cli-sync-git");
-  const xdg = await makeTempDir("cli-sync-git-xdg");
   try {
     await mkdir(join(dir, ".git"), { recursive: true });
-    await runCli(
-      dir,
-      ["connect", "github", "origin", "--token", "test-token", "--repo", "user/repo"],
+
+    const error = await execFileAsync(
+      "node",
+      [CLI_PATH, "connect", "github:user/repo", "--token", "test-token"],
       {
-        XDG_CONFIG_HOME: xdg,
+        cwd: dir,
+        env: { ...process.env, XDG_CONFIG_HOME: join(dir, ".xdg") },
       },
-    );
+    ).catch((value) => value as { stdout: string; stderr: string; code: number });
+    const combined = (error.stdout ?? "") + (error.stderr ?? "");
 
-    const result = await execFileAsync("node", [CLI_PATH, "sync"], {
-      cwd: dir,
-      env: { ...process.env, XDG_CONFIG_HOME: xdg },
-    }).catch((error) => error as { stdout: string; stderr: string; code: number });
+    assert.equal(error.code, 1);
+    assert.equal(combined.includes("--dangerously-allow-git"), true);
 
-    assert.equal(result.code, 1);
-    const combined = (result.stdout ?? "") + (result.stderr ?? "");
-    assert.equal(
-      combined.includes(
-        "git repository detected — run `stash config set allow-git true` to allow syncing",
-      ),
-      true,
-    );
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-    await rm(xdg, { recursive: true, force: true });
-  }
-});
-
-test("cli sync migrates the legacy local stash layout before a no-op sync", async () => {
-  const dir = await makeTempDir("cli-sync-migration");
-  try {
-    await writeLegacyLayout(dir, {
-      connections: {},
-      snapshotLocal: { "note.md": "base" },
-    });
-
-    const result = await runCli(dir, ["sync"]);
-    assert.equal(result.stdout.includes("up to date"), true);
-
-    await assertMigration(dir, {
-      connections: {},
-      snapshotLocal: { "note.md": "base" },
-    });
+    const allowed = await runCli(dir, [
+      "connect",
+      "github:user/repo",
+      "--token",
+      "test-token",
+      "--dangerously-allow-git",
+    ]);
+    assert.equal(allowed.stdout.includes(`Connected github:user/repo to ${await realpath(dir)}.`), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -51,19 +51,22 @@ export function getGlobalConfigPath(): string {
   return join(getStashPath(), "config.json");
 }
 
-export function getStashDirPath(id: string): string {
-  return join(getStashPath(), id);
+export function getStashDirPath(id: string, stashPath = getStashPath()): string {
+  return join(stashPath, id);
 }
 
-export async function ensureStashPath(): Promise<string> {
-  const stashPath = getStashPath();
+export function getStashRecordPath(id: string, stashPath = getStashPath()): string {
+  return join(getStashDirPath(id, stashPath), "stash.json");
+}
+
+export async function ensureStashPath(stashPath = getStashPath()): Promise<string> {
   await mkdir(stashPath, { recursive: true, mode: 0o700 });
   return stashPath;
 }
 
-export async function ensureStashDirPath(id: string): Promise<string> {
-  const stashDir = getStashDirPath(id);
-  await ensureStashPath();
+export async function ensureStashDirPath(id: string, stashPath = getStashPath()): Promise<string> {
+  const stashDir = getStashDirPath(id, stashPath);
+  await ensureStashPath(stashPath);
   await mkdir(stashDir, { recursive: true, mode: 0o700 });
   return stashDir;
 }

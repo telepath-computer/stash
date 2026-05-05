@@ -1,15 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync } from "node:fs";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { hashBuffer } from "../../src/utils/hash.ts";
-import {
-  GitRepoError,
-  MultipleConnectionsError,
-  PushConflictError,
-  SyncLockError,
-} from "../../src/errors.ts";
+import { MultipleConnectionsError, PushConflictError, SyncLockError } from "../../src/errors.ts";
 import { FakeProvider } from "../helpers/fake-provider.ts";
 import { makeStash, writeFiles } from "../helpers/make-stash.ts";
 
@@ -258,20 +253,6 @@ test("sync: first sync with identical content on both sides skips file writes", 
   );
 });
 
-test("sync: git repository without allow-git throws", async () => {
-  const fake = new FakeProvider();
-  const { stash, dir } = await makeStash(
-    { "hello.md": "hello" },
-    { providers: fakeRegistry(fake) },
-  );
-  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
-  await mkdir(join(dir, ".git"), { recursive: true });
-
-  await assert.rejects(stash.sync(), GitRepoError);
-  assert.equal(fake.fetchCalls, 0);
-  assert.equal(fake.pushCalls, 0);
-});
-
 test("sync: multiple connections throws", async () => {
   const fake = new FakeProvider();
   const { stash, dir } = await makeStash(
@@ -295,28 +276,6 @@ test("sync: multiple connections throws", async () => {
   await assert.rejects(reloaded.sync(), MultipleConnectionsError);
   assert.equal(fake.fetchCalls, 0);
   assert.equal(fake.pushCalls, 0);
-});
-
-test("sync: allow-git permits syncing inside a git repository", async () => {
-  const fake = new FakeProvider();
-  const { stash, dir } = await makeStash(
-    { "hello.md": "hello" },
-    { providers: fakeRegistry(fake) },
-  );
-  await stash.connect({ name: "fake", provider: "fake", repo: "r" });
-  await writeFile(
-    join(dir, ".stash", "config.json"),
-    JSON.stringify(
-      { "allow-git": true, connections: { fake: { provider: "fake", repo: "r" } } },
-      null,
-      2,
-    ),
-    "utf8",
-  );
-  await mkdir(join(dir, ".git"), { recursive: true });
-
-  await stash.sync();
-  assert.equal(fake.files.get("hello.md"), "hello");
 });
 
 test("sync: skip/skip mutations with changed snapshot still pushes snapshot", async () => {

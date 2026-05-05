@@ -36,3 +36,10 @@ export class MigrationError extends Error {
     this.name = "MigrationError";
   }
 }
+
+export class InvalidUriError extends Error {
+  constructor(uri: string) {
+    super(`Invalid URI: ${uri}`);
+    this.name = "InvalidUriError";
+  }
+}

@@ -12,6 +12,7 @@ type RegistryLockPayload = {
 
 type RegistryLockOptions = {
   path?: string;
+  stashPath?: string;
   retryDelayMs?: number;
   staleMs?: number;
 };
@@ -20,8 +21,8 @@ const DEFAULT_RETRY_DELAY_MS = 10;
 const DEFAULT_STALE_MS = 60_000;
 const SIGNALS: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
 
-export function getRegistryLockPath(): string {
-  return `${getStashPath()}/.lock`;
+export function getRegistryLockPath(stashPath = getStashPath()): string {
+  return `${stashPath}/.lock`;
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -44,10 +45,10 @@ async function readLockPayload(lockPath: string): Promise<RegistryLockPayload | 
 }
 
 async function isStaleLock(lockPath: string, staleMs: number): Promise<boolean> {
-  let ageMs = 0;
+  let lockStat: Awaited<ReturnType<typeof stat>>;
 
   try {
-    ageMs = Date.now() - (await stat(lockPath)).mtimeMs;
+    lockStat = await stat(lockPath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return false;
@@ -59,6 +60,7 @@ async function isStaleLock(lockPath: string, staleMs: number): Promise<boolean> 
   if (typeof payload?.pid === "number" && !isProcessAlive(payload.pid)) {
     return true;
   }
+  const ageMs = Date.now() - lockStat.mtimeMs;
   return ageMs > staleMs;
 }
 
@@ -109,12 +111,13 @@ export async function withRegistryLock<T>(
   fn: () => Promise<T>,
   options: RegistryLockOptions = {},
 ): Promise<T> {
-  const lockPath = options.path ?? getRegistryLockPath();
+  const stashPath = options.stashPath ?? getStashPath();
+  const lockPath = options.path ?? getRegistryLockPath(stashPath);
   const retryDelayMs = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
   const staleMs = options.staleMs ?? DEFAULT_STALE_MS;
   const cleanupListeners = installCleanup(lockPath);
 
-  await mkdir(getStashPath(), { recursive: true, mode: 0o700 });
+  await mkdir(stashPath, { recursive: true, mode: 0o700 });
 
   const payload = JSON.stringify(
     {
@@ -126,10 +129,16 @@ export async function withRegistryLock<T>(
     2,
   );
 
+  let result: T | undefined;
+  let operationError: unknown;
+  let cleanupError: unknown;
+  let acquired = false;
+
   try {
     for (;;) {
       try {
         await writeFile(lockPath, payload, { encoding: "utf8", flag: "wx", mode: 0o600 });
+        acquired = true;
         break;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
@@ -145,9 +154,14 @@ export async function withRegistryLock<T>(
       }
     }
 
-    return await fn();
+    result = await fn();
+  } catch (error) {
+    operationError = error;
   } finally {
     cleanupListeners();
+  }
+
+  if (acquired) {
     try {
       const currentPayload = readFileSync(lockPath, "utf8");
       if (currentPayload === payload) {
@@ -155,8 +169,16 @@ export async function withRegistryLock<T>(
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw error;
+        cleanupError = error;
       }
     }
   }
+
+  if (operationError) {
+    throw operationError;
+  }
+  if (cleanupError) {
+    throw cleanupError;
+  }
+  return result as T;
 }

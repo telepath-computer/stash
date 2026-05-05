@@ -1,17 +1,23 @@
 import type { Readable } from "node:stream";
 
-export interface ProviderSpec {
-  setup: Field[];
-  connect: Field[];
-}
-
-export interface Field {
+export interface ConfigItem {
   name: string;
   label: string;
   secret?: boolean;
+  global?: boolean;
 }
 
 export type SnapshotEntry = { hash: string } | { hash: string; modified: number };
+
+export interface StashConnectionRecord {
+  provider: string;
+  config: Record<string, string>;
+}
+
+export interface StashRecord {
+  path: string;
+  connections: StashConnectionRecord[];
+}
 
 export type FileState =
   | { type: "text"; content: string }
@@ -65,6 +71,6 @@ export interface GlobalConfig {
 }
 
 export type ProviderClass = {
-  spec: ProviderSpec;
+  configSchema: ConfigItem[];
   new (config: Record<string, string>): Provider;
 };

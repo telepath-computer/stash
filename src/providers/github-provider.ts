@@ -4,7 +4,6 @@ import type {
   ChangeSet,
   FileState,
   Provider,
-  ProviderSpec,
   PushPayload,
   SnapshotEntry,
 } from "../types.ts";
@@ -35,16 +34,17 @@ async function streamToBuffer(stream: Readable): Promise<Buffer> {
 
 export interface GitHubConfig {
   token: string;
-  repo: string;
+  id?: string;
+  repo?: string;
 }
 
 type BlobResult = { isBinary: boolean; text: string | null } | null;
 
 export class GitHubProvider implements Provider {
-  static spec: ProviderSpec = {
-    setup: [{ name: "token", label: "Personal access token", secret: true }],
-    connect: [{ name: "repo", label: "Repository (user/repo)" }],
-  };
+  static configSchema = [
+    { name: "token", label: "Personal access token", secret: true, global: true },
+    { name: "id", label: "Identifier (owner/repo)" },
+  ];
 
   private readonly token: string;
   private readonly owner: string;
@@ -58,9 +58,10 @@ export class GitHubProvider implements Provider {
     if (!config.token) {
       throw new Error("Missing GitHub token");
     }
-    const repoParts = config.repo.split("/");
+    const id = config.id ?? config.repo ?? "";
+    const repoParts = id.split("/");
     if (
-      !config.repo ||
+      !id ||
       repoParts.length !== 2 ||
       repoParts[0].length === 0 ||
       repoParts[1].length === 0
