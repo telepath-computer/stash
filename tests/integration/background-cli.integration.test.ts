@@ -22,8 +22,14 @@ type RunResult = {
   calls: ServiceCalls;
 };
 
+const ANSI_PATTERN = /\x1B\[[0-9;]*m/g;
+
 async function makeTempDir(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
+}
+
+function stripAnsi(text: string): string {
+  return text.replace(ANSI_PATTERN, "");
 }
 
 function getTestStashPath(dir: string): string {
@@ -130,10 +136,12 @@ test("connect creates a new stash record and stores provider globals separately"
       },
     );
 
+    const stdout = stripAnsi(result.stdout);
     assert.equal(result.exitCode, 0);
-    assert.equal(result.stdout.includes("github:user/repo"), true);
-    assert.equal(result.stdout.includes(await realpath(dir)), true);
-    assert.equal(result.stdout.includes("Background sync is on. Run `stash status` to check."), true);
+    assert.equal(stdout.includes("Connected"), true);
+    assert.equal(stdout.includes("github:user/repo"), true);
+    assert.equal(stdout.includes(await realpath(dir)), true);
+    assert.equal(stdout.includes("Background sync is on. Run `stash status` to check."), true);
     assert.equal(result.config.providers.github?.token, "test-token");
     assert.equal(existsSync(join(dir, ".stash")), false);
 
@@ -156,9 +164,10 @@ test("connect is idempotent for the same uri", async () => {
       config: first.config,
     });
 
+    const stdout = stripAnsi(second.stdout);
     assert.equal(second.exitCode, 0);
-    assert.equal(second.stdout.includes("Already connected"), true);
-    assert.equal(second.stdout.includes("github:user/repo"), true);
+    assert.equal(stdout.includes("Already connected"), true);
+    assert.equal(stdout.includes("github:user/repo"), true);
     assert.deepEqual(await listStashIds(getTestStashPath(dir)), [(
       await readOnlyStashRecord(getTestStashPath(dir))
     ).id]);
@@ -200,11 +209,12 @@ test("connect blocks git repositories unless --dangerously-allow-git is passed",
 
     const result = await runMain(dir, ["connect", "github:user/repo", "--token", "test-token"]);
 
+    const stderr = stripAnsi(result.stderr);
     assert.equal(result.exitCode, 1);
-    assert.equal(result.stdout.includes("is a git repository"), true);
-    assert.equal(result.stdout.includes("--dangerously-allow-git"), true);
-    assert.equal(result.stdout.includes("No changes made."), true);
-    assert.equal(result.stdout.includes("Background sync is on"), false);
+    assert.equal(stderr.includes("Error:"), true);
+    assert.equal(stderr.includes("is a git repository"), true);
+    assert.equal(stderr.includes("--dangerously-allow-git"), true);
+    assert.equal(stripAnsi(result.stdout).includes("Background sync is on"), false);
     assert.deepEqual(await listStashIds(getTestStashPath(dir)), []);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -222,10 +232,11 @@ test("disconnect tombstones the last connection without deleting the stash dir",
       config: connected.config,
     });
 
+    const stdout = stripAnsi(result.stdout);
     assert.equal(result.exitCode, 0);
-    assert.equal(result.stdout.includes("Disconnected"), true);
-    assert.equal(result.stdout.includes("github:user/repo"), true);
-    assert.equal(result.stdout.includes(await realpath(dir)), true);
+    assert.equal(stdout.includes("Disconnected"), true);
+    assert.equal(stdout.includes("github:user/repo"), true);
+    assert.equal(stdout.includes(await realpath(dir)), true);
     assert.equal(existsSync(join(getTestStashPath(dir), id)), true);
     const record = JSON.parse(
       await readFile(join(getTestStashPath(dir), id, "stash.json"), "utf8"),
@@ -246,10 +257,11 @@ test("relink rewrites stash.json.path and enforces the git gate on the new path"
 
     await mkdir(join(moved, ".git"), { recursive: true });
     const error = await runMain(dir, ["relink", dir, moved], { config: connected.config });
+    const errorStderr = stripAnsi(error.stderr);
     assert.equal(error.exitCode, 1);
-    assert.equal(error.stdout.includes("is a git repository"), true);
-    assert.equal(error.stdout.includes("--dangerously-allow-git"), true);
-    assert.equal(error.stdout.includes("No changes made."), true);
+    assert.equal(errorStderr.includes("Error:"), true);
+    assert.equal(errorStderr.includes("is a git repository"), true);
+    assert.equal(errorStderr.includes("--dangerously-allow-git"), true);
 
     const result = await runMain(
       dir,
@@ -257,10 +269,12 @@ test("relink rewrites stash.json.path and enforces the git gate on the new path"
       { config: connected.config },
     );
 
+    const stdout = stripAnsi(result.stdout);
     assert.equal(result.exitCode, 0);
-    assert.equal(result.stdout.includes(await realpath(dir)), true);
-    assert.equal(result.stdout.includes(await realpath(moved)), true);
-    assert.equal(result.stdout.includes("→"), true);
+    assert.equal(stdout.includes("Relinked"), true);
+    assert.equal(stdout.includes(await realpath(dir)), true);
+    assert.equal(stdout.includes(await realpath(moved)), true);
+    assert.equal(stdout.includes("→"), true);
     const record = JSON.parse(
       await readFile(join(getTestStashPath(dir), id, "stash.json"), "utf8"),
     ) as StashRecord;
@@ -323,16 +337,17 @@ test("status prints daemon state, connection URIs, and missing-path guidance", a
       serviceStatus: { installed: true, running: true },
     });
 
+    const stdout = stripAnsi(result.stdout);
     assert.equal(result.exitCode, 0);
-    assert.equal(result.stdout.includes("Daemon: running"), true);
-    assert.equal(result.stdout.includes(resolve(dir)), true);
-    assert.equal(result.stdout.includes("github:user/live"), true);
-    assert.equal(result.stdout.includes("Connection"), true);
-    assert.equal(result.stdout.includes("State"), true);
-    assert.equal(result.stdout.includes("Pending"), true);
-    assert.equal(result.stdout.includes("1 modified"), true);
-    assert.equal(result.stdout.includes(`${resolve(missing)} (path missing)`), true);
-    assert.equal(result.stdout.includes(`Run: stash relink ${resolve(missing)} <new-path>`), true);
+    assert.equal(stdout.includes("Daemon: running"), true);
+    assert.equal(stdout.includes(resolve(dir)), true);
+    assert.equal(stdout.includes("github:user/live"), true);
+    assert.equal(stdout.includes("Connection"), true);
+    assert.equal(stdout.includes("State"), true);
+    assert.equal(stdout.includes("Pending"), true);
+    assert.equal(stdout.includes("1 modified"), true);
+    assert.equal(stdout.includes(`${resolve(missing)} (path missing)`), true);
+    assert.equal(stdout.includes(`Run: stash relink ${resolve(missing)} <new-path>`), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -346,10 +361,11 @@ test("status shows daemon state and empty hint when no stashes are registered", 
       serviceStatus: { installed: false, running: false },
     });
 
+    const stdout = stripAnsi(result.stdout);
     assert.equal(result.exitCode, 0);
-    assert.equal(result.stdout.includes("Daemon: stopped"), true);
+    assert.equal(stdout.includes("Daemon: stopped"), true);
     assert.equal(
-      result.stdout.includes("No stashes registered. Run `stash connect <path> <uri>` to add one."),
+      stdout.includes("No stashes registered. Run `stash connect <path> <uri>` to add one."),
       true,
     );
   } finally {
@@ -357,7 +373,7 @@ test("status shows daemon state and empty hint when no stashes are registered", 
   }
 });
 
-test("status renders last error rows for errored stashes", async () => {
+test("status renders the error state row and last error details for errored stashes", async () => {
   const dir = await makeTempDir("stash-cli-status-error");
   const stashPath = getTestStashPath(dir);
 
@@ -385,23 +401,25 @@ test("status renders last error rows for errored stashes", async () => {
       serviceStatus: { installed: true, running: true },
     });
 
+    const stdout = stripAnsi(result.stdout);
     assert.equal(result.exitCode, 0);
-    assert.equal(result.stdout.includes("Last error"), true);
-    assert.equal(result.stdout.includes("rate limit resets in 43s"), true);
+    assert.match(stdout, /State[\s\S]*error[\s\S]*Last error/);
+    assert.equal(stdout.includes("Last error"), true);
+    assert.equal(stdout.includes("rate limit resets in 43s"), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("error output keeps the clack cancel flow and no-change outro", async () => {
+test("error output is plain stderr with an Error prefix", async () => {
   const dir = await makeTempDir("stash-cli-error-shape");
 
   try {
     const result = await runMain(dir, ["disconnect"]);
 
+    const stderr = stripAnsi(result.stderr);
     assert.equal(result.exitCode, 1);
-    assert.equal(result.stdout.includes("No stash found at"), true);
-    assert.equal(result.stdout.includes("No changes made."), true);
+    assert.equal(stderr.includes("Error: No stash found at"), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -412,16 +430,18 @@ test("start and stop delegate to the service and use the new daemon messaging", 
 
   try {
     const started = await runMain(dir, ["start"]);
+    const startedStdout = stripAnsi(started.stdout);
     assert.equal(started.exitCode, 0);
     assert.equal(started.calls.install, 1);
-    assert.equal(started.stdout.includes("Daemon installed and running"), true);
+    assert.equal(startedStdout.includes("Daemon installed and running"), true);
 
     const stopped = await runMain(dir, ["stop"], {
       serviceStatus: { installed: true, running: true },
     });
+    const stoppedStdout = stripAnsi(stopped.stdout);
     assert.equal(stopped.exitCode, 0);
     assert.equal(stopped.calls.uninstall, 1);
-    assert.equal(stopped.stdout.includes("Daemon stopped"), true);
+    assert.equal(stoppedStdout.includes("Daemon stopped"), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

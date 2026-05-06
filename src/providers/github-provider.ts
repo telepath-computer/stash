@@ -78,6 +78,11 @@ export class GitHubProvider implements Provider {
   async fetch(localSnapshot?: Record<string, SnapshotEntry>): Promise<ChangeSet> {
     const branchRes = await this.rest("GET", this.repoPath("/branches/main"));
     if (branchRes.status === 404) {
+      const repoRes = await this.rest("GET", this.repoPath(""));
+      if (repoRes.status === 404) {
+        throw new Error(`Repository not found: ${this.owner}/${this.name}`);
+      }
+      await this.ensureOk(repoRes, "Failed to load repository");
       this.headSha = undefined;
       this.baseTreeSha = undefined;
       return { added: new Map(), modified: new Map(), deleted: [] };

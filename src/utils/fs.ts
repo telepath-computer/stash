@@ -1,16 +1,28 @@
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+
+const JSON_READ_RETRIES = 5;
+const JSON_READ_RETRY_MS = 2;
 
 export async function readJsonFile<T>(path: string, fallback: T): Promise<T> {
-  try {
-    const raw = await readFile(path, "utf8");
-    return JSON.parse(raw) as T;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return fallback;
+  for (let attempt = 0; attempt < JSON_READ_RETRIES; attempt += 1) {
+    try {
+      const raw = await readFile(path, "utf8");
+      return JSON.parse(raw) as T;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return fallback;
+      }
+      if (error instanceof SyntaxError && attempt < JSON_READ_RETRIES - 1) {
+        await delay(JSON_READ_RETRY_MS);
+        continue;
+      }
+      throw error;
     }
-    throw error;
   }
+
+  return fallback;
 }
 
 export async function writeJsonFile(

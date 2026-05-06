@@ -10,9 +10,14 @@ import { makeTempDir } from "../helpers/make-stash.ts";
 
 const execFileAsync = promisify(execFile);
 const CLI_PATH = fileURLToPath(new URL("../../src/cli.ts", import.meta.url));
+const ANSI_PATTERN = /\x1B\[[0-9;]*m/g;
 
 function getTestStashPath(dir: string): string {
   return join(dir, ".xdg", "stash");
+}
+
+function stripAnsi(text: string): string {
+  return text.replace(ANSI_PATTERN, "");
 }
 
 async function runCli(
@@ -38,7 +43,7 @@ test("cli setup stores provider globals in ~/.stash/config.json", async () => {
   try {
     const result = await runCli(dir, ["setup", "github", "--token", "test-token"]);
 
-    assert.equal(result.stdout.includes("Configured github"), true);
+    assert.equal(stripAnsi(result.stdout).includes("Configured github"), true);
     const config = JSON.parse(await readFile(join(getTestStashPath(dir), "config.json"), "utf8"));
     assert.deepEqual(config, {
       providers: {
@@ -59,8 +64,9 @@ test("cli connect creates registry metadata without a local .stash directory", a
     const result = await runCli(dir, ["connect", "github:user/repo", "--token", "test-token"]);
     const canonicalDir = await realpath(dir);
 
-    assert.equal(result.stdout.includes("github:user/repo"), true);
-    assert.equal(result.stdout.includes(canonicalDir), true);
+    assert.equal(stripAnsi(result.stdout).includes("Connected"), true);
+    assert.equal(stripAnsi(result.stdout).includes("github:user/repo"), true);
+    assert.equal(stripAnsi(result.stdout).includes(canonicalDir), true);
     assert.equal(existsSync(join(dir, ".stash")), false);
 
     const ids = await listStashIds(getTestStashPath(dir));
@@ -85,8 +91,9 @@ test("cli connect accepts an explicit path argument", async () => {
     const result = await runCli(dir, ["connect", target, "github:user/repo", "--token", "test-token"]);
     const canonicalTarget = await realpath(target);
 
-    assert.equal(result.stdout.includes("github:user/repo"), true);
-    assert.equal(result.stdout.includes(canonicalTarget), true);
+    assert.equal(stripAnsi(result.stdout).includes("Connected"), true);
+    assert.equal(stripAnsi(result.stdout).includes("github:user/repo"), true);
+    assert.equal(stripAnsi(result.stdout).includes(canonicalTarget), true);
     const ids = await listStashIds(getTestStashPath(dir));
     assert.equal(ids.length, 1);
     const record = JSON.parse(
@@ -109,9 +116,9 @@ test("cli disconnect tombstones the stash record", async () => {
 
     const result = await runCli(dir, ["disconnect"]);
 
-    assert.equal(result.stdout.includes("Disconnected"), true);
-    assert.equal(result.stdout.includes("github:user/repo"), true);
-    assert.equal(result.stdout.includes(canonicalDir), true);
+    assert.equal(stripAnsi(result.stdout).includes("Disconnected"), true);
+    assert.equal(stripAnsi(result.stdout).includes("github:user/repo"), true);
+    assert.equal(stripAnsi(result.stdout).includes(canonicalDir), true);
     const record = JSON.parse(
       await readFile(join(getTestStashPath(dir), id, "stash.json"), "utf8"),
     ) as { connections: unknown[] };
@@ -133,9 +140,10 @@ test("cli relink rewrites the canonical path stored in stash.json", async () => 
 
     const result = await runCli(dir, ["relink", dir, moved]);
 
-    assert.equal(result.stdout.includes(canonicalDir), true);
-    assert.equal(result.stdout.includes(canonicalMoved), true);
-    assert.equal(result.stdout.includes("→"), true);
+    assert.equal(stripAnsi(result.stdout).includes("Relinked"), true);
+    assert.equal(stripAnsi(result.stdout).includes(canonicalDir), true);
+    assert.equal(stripAnsi(result.stdout).includes(canonicalMoved), true);
+    assert.equal(stripAnsi(result.stdout).includes("→"), true);
     const record = JSON.parse(
       await readFile(join(getTestStashPath(dir), id, "stash.json"), "utf8"),
     ) as { path: string };
@@ -170,11 +178,11 @@ test("cli status prints registered stashes from the registry root", async () => 
 
     const result = await runCli(dir, ["status"]);
 
-    assert.equal(result.stdout.includes("Daemon:"), true);
-    assert.equal(result.stdout.includes("Connection"), true);
-    assert.equal(result.stdout.includes("State"), true);
-    assert.equal(result.stdout.includes(await realpath(dir)), true);
-    assert.equal(result.stdout.includes("github:user/repo"), true);
+    assert.equal(stripAnsi(result.stdout).includes("Daemon:"), true);
+    assert.equal(stripAnsi(result.stdout).includes("Connection"), true);
+    assert.equal(stripAnsi(result.stdout).includes("State"), true);
+    assert.equal(stripAnsi(result.stdout).includes(await realpath(dir)), true);
+    assert.equal(stripAnsi(result.stdout).includes("github:user/repo"), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -194,12 +202,12 @@ test("cli connect blocks git repos unless --dangerously-allow-git is passed", as
         env: { ...process.env, XDG_CONFIG_HOME: join(dir, ".xdg") },
       },
     ).catch((value) => value as { stdout: string; stderr: string; code: number });
-    const combined = (error.stdout ?? "") + (error.stderr ?? "");
+    const stderr = stripAnsi(error.stderr ?? "");
 
     assert.equal(error.code, 1);
-    assert.equal(combined.includes("is a git repository"), true);
-    assert.equal(combined.includes("--dangerously-allow-git"), true);
-    assert.equal(combined.includes("No changes made."), true);
+    assert.equal(stderr.includes("Error:"), true);
+    assert.equal(stderr.includes("is a git repository"), true);
+    assert.equal(stderr.includes("--dangerously-allow-git"), true);
 
     const allowed = await runCli(dir, [
       "connect",
@@ -208,8 +216,9 @@ test("cli connect blocks git repos unless --dangerously-allow-git is passed", as
       "test-token",
       "--dangerously-allow-git",
     ]);
-    assert.equal(allowed.stdout.includes("github:user/repo"), true);
-    assert.equal(allowed.stdout.includes(await realpath(dir)), true);
+    assert.equal(stripAnsi(allowed.stdout).includes("Connected"), true);
+    assert.equal(stripAnsi(allowed.stdout).includes("github:user/repo"), true);
+    assert.equal(stripAnsi(allowed.stdout).includes(await realpath(dir)), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

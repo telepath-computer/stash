@@ -18,10 +18,11 @@ test("GitHubProvider constructor validates owner/repo format", () => {
   assert.throws(() => new GitHubProvider({ token: "t", repo: "a/b/c" }), /owner\/repo/i);
 });
 
-test("GitHubProvider.fetch: empty repo returns empty changeset", async () => {
+test("GitHubProvider.fetch: fetch returns empty changeset when repo exists but main branch does not", async () => {
   const api = new MockGitHubAPI();
   const cleanup = api
     .on("GET", "/repos/user/repo/branches/main", { status: 404, body: { message: "Not Found" } })
+    .on("GET", "/repos/user/repo", { status: 200, body: { full_name: "user/repo" } })
     .install();
 
   try {
@@ -30,6 +31,38 @@ test("GitHubProvider.fetch: empty repo returns empty changeset", async () => {
     assert.equal(changeSet.added.size, 0);
     assert.equal(changeSet.modified.size, 0);
     assert.deepEqual(changeSet.deleted, []);
+    api.assertDone();
+  } finally {
+    cleanup();
+  }
+});
+
+test("GitHubProvider.fetch: throws Repository not found when the repo probe returns 404", async () => {
+  const api = new MockGitHubAPI();
+  const cleanup = api
+    .on("GET", "/repos/user/repo/branches/main", { status: 404, body: { message: "Not Found" } })
+    .on("GET", "/repos/user/repo", { status: 404, body: { message: "Not Found" } })
+    .install();
+
+  try {
+    const provider = makeProvider();
+    await assert.rejects(() => provider.fetch({}), /Repository not found: user\/repo/);
+    api.assertDone();
+  } finally {
+    cleanup();
+  }
+});
+
+test("GitHubProvider.fetch: throws auth error when the repo probe returns 401", async () => {
+  const api = new MockGitHubAPI();
+  const cleanup = api
+    .on("GET", "/repos/user/repo/branches/main", { status: 404, body: { message: "Not Found" } })
+    .on("GET", "/repos/user/repo", { status: 401, body: { message: "Bad credentials" } })
+    .install();
+
+  try {
+    const provider = makeProvider();
+    await assert.rejects(() => provider.fetch({}), /GitHub authentication failed/);
     api.assertDone();
   } finally {
     cleanup();

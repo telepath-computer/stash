@@ -3,16 +3,11 @@ import { access, constants, readdir, realpath, readFile } from "node:fs/promises
 import { createRequire } from "node:module";
 import { delimiter, join, resolve } from "node:path";
 import type { Readable } from "node:stream";
+import { input as promptInput, password as promptPasswordInput } from "@inquirer/prompts";
 import Table from "cli-table3";
 import { Daemon, UnsupportedPlatformError } from "@rupertsworld/daemon";
 import { Command, Option } from "commander";
-import {
-  CliCommandError,
-  cliError,
-  createCliUi,
-  pluralize,
-  shortenHomePath,
-} from "./cli-ui.ts";
+import picocolors from "picocolors";
 import {
   getProviderConfig,
   getStashDirPath,
@@ -33,6 +28,7 @@ import type { ConfigItem, GlobalConfig, ProviderClass, StashRecord } from "./typ
 
 const SERVICE_NAME = "stash-background";
 const SERVICE_DESCRIPTION = "Stash background sync";
+const URI_PATTERN = /\b[a-z][a-z0-9-]*:[^\s]+/g;
 
 type ServiceHandle = {
   install(): Promise<void>;
@@ -88,6 +84,110 @@ type StatusDeps = Pick<CliDependencies, "stashPath"> & {
   getService: () => Promise<ServiceHandle>;
 };
 
+type Colors = ReturnType<typeof createColors>;
+
+type PromptIo = {
+  input?: NodeJS.ReadableStream;
+  output?: NodeJS.WritableStream;
+};
+
+export class CliCommandError extends Error {
+  readonly summary: string;
+  readonly details: string[];
+
+  constructor(summary: string, details: string[] = []) {
+    super(summary);
+    this.name = "CliCommandError";
+    this.summary = summary;
+    this.details = details;
+  }
+}
+
+export function cliError(summary: string, details: string[] = []): CliCommandError {
+  return new CliCommandError(summary, details);
+}
+
+export function shortenHomePath(path: string, home = process.env.HOME): string {
+  if (!home) {
+    return path;
+  }
+  if (path === home) {
+    return "~";
+  }
+  return path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+}
+
+export function pluralize(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+export function createColors(isTTY: boolean): ReturnType<typeof picocolors.createColors> {
+  return picocolors.createColors(isTTY);
+}
+
+export function writeLine(stream: NodeJS.WritableStream, text = ""): void {
+  stream.write(`${text}\n`);
+}
+
+function writeBlankLine(stream: NodeJS.WritableStream): void {
+  writeLine(stream);
+}
+
+function isPromptCancelled(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return (
+    error.name === "ExitPromptError" ||
+    error.name === "AbortPromptError" ||
+    /cancelled|canceled|force closed|sigint/i.test(error.message)
+  );
+}
+
+export async function promptText(label: string, io: PromptIo = {}): Promise<string> {
+  try {
+    return await promptInput(
+      {
+        message: label,
+        validate: (candidate) => {
+          if (!candidate || candidate.trim().length === 0) {
+            return `${label} is required`;
+          }
+          return true;
+        },
+      },
+      io,
+    );
+  } catch (error) {
+    if (isPromptCancelled(error)) {
+      throw cliError("Prompt cancelled.");
+    }
+    throw error;
+  }
+}
+
+export async function promptPassword(label: string, io: PromptIo = {}): Promise<string> {
+  try {
+    return await promptPasswordInput(
+      {
+        message: label,
+        validate: (candidate) => {
+          if (!candidate || candidate.trim().length === 0) {
+            return `${label} is required`;
+          }
+          return true;
+        },
+      },
+      io,
+    );
+  } catch (error) {
+    if (isPromptCancelled(error)) {
+      throw cliError("Prompt cancelled.");
+    }
+    throw error;
+  }
+}
+
 function getGlobalConfigItems(provider: ProviderClass): ConfigItem[] {
   return provider.configSchema.filter((item) => item.global === true);
 }
@@ -101,17 +201,17 @@ function getCliValue(
 }
 
 async function promptField(
-  ui: ReturnType<typeof createCliUi>,
+  io: PromptIo,
   field: ConfigItem,
 ): Promise<string> {
   if (field.secret) {
-    return ui.promptPassword(field.label);
+    return promptPassword(field.label, io);
   }
-  return ui.promptText(field.label);
+  return promptText(field.label, io);
 }
 
 async function collectFields(
-  ui: ReturnType<typeof createCliUi>,
+  io: PromptIo,
   fields: ConfigItem[],
   valuesFromCli: Record<string, string | boolean | undefined>,
   current: Record<string, string> = {},
@@ -126,7 +226,7 @@ async function collectFields(
       values[field.name] = cliValue;
       continue;
     }
-    values[field.name] = await promptField(ui, field);
+    values[field.name] = await promptField(io, field);
   }
   return values;
 }
@@ -185,6 +285,62 @@ function toCliCommandError(error: unknown): CliCommandError {
     return cliError(asSentence(error.message));
   }
   return cliError(asSentence(String(error)));
+}
+
+function colorizeUris(text: string, colors: Colors): string {
+  return text.replace(URI_PATTERN, (uri) => {
+    const punctuation = /[.,!?]$/.test(uri) ? uri.slice(-1) : "";
+    const bareUri = punctuation ? uri.slice(0, -1) : uri;
+    return `${colors.cyan(bareUri)}${punctuation}`;
+  });
+}
+
+function renderCliError(stream: NodeJS.WritableStream, error: CliCommandError, colors: Colors): void {
+  writeLine(stream, `${colors.red("Error:")} ${colorizeUris(error.summary, colors)}`);
+  for (const detail of error.details) {
+    writeLine(stream, colorizeUris(detail, colors));
+  }
+}
+
+function formatConfigured(providerName: string, colors: Colors): string {
+  return `${colors.green("Configured")} ${providerName}`;
+}
+
+function formatAlreadyConnected(uri: string, colors: Colors): string {
+  return `${colors.green("Already connected")} ${colors.gray("—")} ${colors.cyan(uri)}`;
+}
+
+function formatConnected(uri: string, path: string, colors: Colors): string {
+  return `${colors.green("Connected")} ${colors.cyan(uri)} ${colors.gray("to")} ${path}`;
+}
+
+function formatDisconnected(uri: string, path: string, colors: Colors): string {
+  return `${colors.green("Disconnected")} ${colors.cyan(uri)} ${colors.gray("from")} ${path}`;
+}
+
+function formatRelinked(oldPath: string, newPath: string, colors: Colors): string {
+  return `${colors.green("Relinked")} ${oldPath} ${colors.gray("→")} ${newPath}`;
+}
+
+function formatAlreadyLinked(path: string, colors: Colors): string {
+  return `${colors.green("Already linked")} ${colors.gray("—")} ${path}`;
+}
+
+function formatConnectHint(colors: Colors): string {
+  return colors.gray("Background sync is on. Run `stash status` to check.");
+}
+
+function formatDaemonState(state: "running" | "stopped" | "unsupported" | "error", colors: Colors): string {
+  if (state === "running") {
+    return `Daemon: ${colors.green("running")}`;
+  }
+  if (state === "stopped") {
+    return `Daemon: ${colors.yellow("stopped")}`;
+  }
+  if (state === "unsupported") {
+    return `Daemon: ${colors.yellow("unsupported")}`;
+  }
+  return `Daemon: ${colors.red("error")}`;
 }
 
 async function isExecutable(path: string): Promise<boolean> {
@@ -325,23 +481,10 @@ function formatPendingChanges(status: PersistedStatus | null): string | null {
   return parts.length > 0 ? parts.join(", ") : null;
 }
 
-function formatDaemonState(
-  state: "running" | "stopped" | "unsupported" | "error",
-  ui: ReturnType<typeof createCliUi>,
-): string {
-  const { colors } = ui;
-  if (state === "running") {
-    return `Daemon: ${colors.green("running")}`;
-  }
-  if (state === "stopped") {
-    return `Daemon: ${colors.yellow("stopped")}`;
-  }
-  return `Daemon: ${colors.red(state)}`;
-}
-
 function renderStatusTable(
   entry: RegistryEntry,
   status: PersistedStatus | null,
+  colors: Colors,
 ): string {
   const table = new Table({
     style: {
@@ -353,22 +496,23 @@ function renderStatusTable(
   });
 
   table.push([
-    "Connection",
-    entry.record.connections.map((connection) => formatUri(connection)).join("\n"),
+    colors.gray("Connection"),
+    entry.record.connections.map((connection) => colors.cyan(formatUri(connection))).join("\n"),
   ]);
-  table.push(["State", describeStatusKind(status)]);
+  const statusKind = describeStatusKind(status);
+  table.push([colors.gray("State"), statusKind === "error" ? colors.red(statusKind) : statusKind]);
 
   if (status?.lastSync) {
-    table.push(["Last sync", formatTimeAgo(new Date(status.lastSync))]);
+    table.push([colors.gray("Last sync"), colors.gray(formatTimeAgo(new Date(status.lastSync)))]);
   }
 
   const pending = formatPendingChanges(status);
   if (pending) {
-    table.push(["Pending", pending]);
+    table.push([colors.gray("Pending"), pending]);
   }
 
   if (status?.error) {
-    table.push(["Last error", status.error]);
+    table.push([colors.gray("Last error"), colors.red(status.error)]);
   }
 
   return table.toString();
@@ -378,20 +522,16 @@ async function runSetup(
   providerName: string,
   valuesFromCli: Record<string, string | boolean | undefined>,
   deps: SetupDeps,
-  ui: ReturnType<typeof createCliUi>,
+  io: PromptIo,
+  stdout: NodeJS.WritableStream,
+  colors: Colors,
 ): Promise<void> {
   const provider = getProvider(providerName);
   const globalFields = getGlobalConfigItems(provider);
   const globalConfig = await deps.readGlobalConfig();
-  const values = await collectFields(
-    ui,
-    globalFields,
-    valuesFromCli,
-    getProviderConfig(globalConfig, providerName),
-  );
+  const values = await collectFields(io, globalFields, valuesFromCli);
   await deps.writeGlobalConfig(setProviderConfig(globalConfig, providerName, values));
-  ui.step(providerName);
-  ui.outro(`Configured ${providerName}`);
+  writeLine(stdout, formatConfigured(providerName, colors));
 }
 
 function normalizeConnectArgs(first: string, second?: string): { pathArg?: string; uri: string } {
@@ -419,7 +559,9 @@ async function runConnect(
   second: string | undefined,
   valuesFromCli: Record<string, string | boolean | undefined>,
   deps: ConnectDeps,
-  ui: ReturnType<typeof createCliUi>,
+  io: PromptIo,
+  stdout: NodeJS.WritableStream,
+  colors: Colors,
 ): Promise<void> {
   const { pathArg, uri } = normalizeConnectArgs(first, second);
   const targetPath = pathArg ?? deps.cwd();
@@ -431,7 +573,7 @@ async function runConnect(
   let globalConfig = await deps.readGlobalConfig();
   const existingGlobalValues = getProviderConfig(globalConfig, parsed.provider);
   const globalValues = await collectFields(
-    ui,
+    io,
     getGlobalConfigItems(provider),
     valuesFromCli,
     existingGlobalValues,
@@ -491,12 +633,12 @@ async function runConnect(
   );
 
   if (outcome === "already-connected") {
-    ui.outro(`Already connected — ${uri}`);
+    writeLine(stdout, formatAlreadyConnected(uri, colors));
     return;
   }
 
   const displayPath = shortenHomePath(canonicalPath);
-  ui.step(`${displayPath} → ${uri}`);
+  writeLine(stdout, formatConnected(uri, displayPath, colors));
 
   let daemonRunning = false;
   try {
@@ -508,18 +650,16 @@ async function runConnect(
   }
 
   if (daemonRunning) {
-    ui.outro("Background sync is on. Run `stash status` to check.");
-    return;
+    writeLine(stdout, formatConnectHint(colors));
   }
-
-  ui.outro(`Connected ${uri} to ${displayPath}`);
 }
 
 async function runDisconnect(
   first: string | undefined,
   second: string | undefined,
   deps: DisconnectDeps,
-  ui: ReturnType<typeof createCliUi>,
+  stdout: NodeJS.WritableStream,
+  colors: Colors,
 ): Promise<void> {
   const { pathArg, uri } = normalizeDisconnectArgs(first, second);
   const lookupPath = await resolveLookupPath(pathArg ?? deps.cwd());
@@ -545,7 +685,7 @@ async function runDisconnect(
         }
         if (currentUris.length !== 1) {
           throw cliError(`Multiple connections at ${displayPath}:`, [
-            ...currentUris,
+            ...currentUris.map((currentUri) => `  ${currentUri}`),
             `Pass the URI to disconnect: stash disconnect ${displayPath} <uri>`,
           ]);
         }
@@ -569,7 +709,7 @@ async function runDisconnect(
     { stashPath },
   );
 
-  ui.outro(`Disconnected ${disconnectedUri} from ${shortenHomePath(disconnectedPath)}`);
+  writeLine(stdout, formatDisconnected(disconnectedUri, shortenHomePath(disconnectedPath), colors));
 }
 
 async function runRelink(
@@ -577,7 +717,8 @@ async function runRelink(
   newPath: string,
   dangerouslyAllowGit: boolean,
   deps: Pick<CliDependencies, "stashPath">,
-  ui: ReturnType<typeof createCliUi>,
+  stdout: NodeJS.WritableStream,
+  colors: Colors,
 ): Promise<void> {
   const oldCanonical = await resolveLookupPath(oldPath);
   const newCanonical = await canonicalizeExistingPath(newPath);
@@ -586,7 +727,7 @@ async function runRelink(
   const displayNew = shortenHomePath(newCanonical);
 
   if (oldCanonical === newCanonical) {
-    ui.outro(`Already linked — ${displayNew}`);
+    writeLine(stdout, formatAlreadyLinked(displayNew, colors));
     return;
   }
 
@@ -609,12 +750,13 @@ async function runRelink(
     { stashPath },
   );
 
-  ui.outro(`${displayOld} → ${displayNew}`);
+  writeLine(stdout, formatRelinked(displayOld, displayNew, colors));
 }
 
 async function runStatus(
   deps: StatusDeps,
-  ui: ReturnType<typeof createCliUi>,
+  stdout: NodeJS.WritableStream,
+  colors: Colors,
 ): Promise<void> {
   const daemonState = await deps
     .getService()
@@ -622,7 +764,8 @@ async function runStatus(
     .then((status) => (status.running ? "running" : "stopped"))
     .catch((error: unknown) => (isUnsupportedPlatformError(error) ? "unsupported" : "error"));
 
-  ui.step(formatDaemonState(daemonState, ui));
+  writeLine(stdout, formatDaemonState(daemonState, colors));
+  writeBlankLine(stdout);
 
   const stashPath = deps.stashPath ?? getStashPath();
   const entries = (await readRegistry(stashPath))
@@ -630,30 +773,34 @@ async function runStatus(
     .sort((a, b) => a.record.path.localeCompare(b.record.path));
 
   if (entries.length === 0) {
-    ui.outro("No stashes registered. Run `stash connect <path> <uri>` to add one.");
+    writeLine(stdout, "No stashes registered. Run `stash connect <path> <uri>` to add one.");
     return;
   }
 
-  for (const entry of entries) {
+  for (const [index, entry] of entries.entries()) {
+    if (index > 0) {
+      writeBlankLine(stdout);
+    }
     const displayPath = shortenHomePath(entry.record.path);
     const status = await readPersistedStatus(stashPath, entry.id);
     if (status?.kind === "missing" || !existsSync(entry.record.path)) {
-      ui.message([
-        `${displayPath} (path missing)`,
-        `Run: stash relink ${displayPath} <new-path>`,
-      ]);
+      writeLine(stdout, `${displayPath} ${colors.yellow("(path missing)")}`);
+      writeLine(stdout, colors.gray(`Run: stash relink ${displayPath} <new-path>`));
       continue;
     }
 
-    ui.message([displayPath, renderStatusTable(entry, status)]);
+    writeLine(stdout, displayPath);
+    writeLine(stdout, renderStatusTable(entry, status, colors));
   }
 
-  ui.outro(pluralize(entries.length, "stash"));
+  writeBlankLine(stdout);
+  writeLine(stdout, pluralize(entries.length, "stash"));
 }
 
 async function runStart(
   serviceHandle: ServiceHandle,
-  ui: ReturnType<typeof createCliUi>,
+  stdout: NodeJS.WritableStream,
+  colors: Colors,
 ): Promise<void> {
   try {
     await serviceHandle.install();
@@ -663,12 +810,12 @@ async function runStart(
     }
     throw error;
   }
-  ui.outro("Daemon installed and running");
+  writeLine(stdout, `Daemon installed and ${colors.green("running")}`);
 }
 
 async function runStop(
   serviceHandle: ServiceHandle,
-  ui: ReturnType<typeof createCliUi>,
+  stdout: NodeJS.WritableStream,
 ): Promise<void> {
   try {
     const status = await serviceHandle.status();
@@ -682,7 +829,7 @@ async function runStop(
     }
     throw error;
   }
-  ui.outro("Daemon stopped");
+  writeLine(stdout, "Daemon stopped");
 }
 
 export async function main(argv = process.argv, deps: CliDependencies = {}): Promise<number> {
@@ -696,17 +843,16 @@ export async function main(argv = process.argv, deps: CliDependencies = {}): Pro
   const runDaemonCommand = deps.runDaemon ?? runDaemon;
   const stdout = deps.stdout ?? process.stdout;
   const stderr = deps.stderr ?? process.stderr;
-  const ui = createCliUi({ input, output: stdout });
+  const colors = createColors(Boolean(stdout.isTTY));
   const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
   let exitCode = 0;
 
-  async function runCommand(title: string, action: () => Promise<void>): Promise<void> {
-    ui.intro(`stash ${title}`);
+  async function runCommand(action: () => Promise<void>): Promise<void> {
     try {
       await action();
     } catch (error) {
       exitCode = 1;
-      ui.renderError(toCliCommandError(error));
+      renderCliError(stderr, toCliCommandError(error), colors);
     }
   }
 
@@ -730,25 +876,33 @@ export async function main(argv = process.argv, deps: CliDependencies = {}): Pro
     .argument("<provider>", "Provider name")
     .allowUnknownOption(true)
     .action(async (providerName: string, _opts: unknown, command: Command) => {
-      await runCommand("setup", async () => {
+      await runCommand(async () => {
         await runSetup(
           providerName,
           command.opts() as Record<string, string | boolean | undefined>,
           { readGlobalConfig: readConfig, writeGlobalConfig: writeConfig },
-          ui,
+          { input, output: stdout },
+          stdout,
+          colors,
         );
       });
     });
 
   const connectCommand = program
     .command("connect")
-    .description("Connect a path to a provider URI")
-    .argument("<first>", "URI or explicit path")
-    .argument("[second]", "URI when an explicit path is provided")
+    .description("Connect a folder to a provider URI (defaults to current directory)")
+    .argument("<uri-or-path>", "Provider URI (e.g. github:owner/repo) — or a path when followed by a URI")
+    .argument("[uri]", "Provider URI when the first argument is a path")
     .allowUnknownOption(true)
     .option("--dangerously-allow-git", "Allow syncing a git repository")
+    .addHelpText(
+      "after",
+      "\nExamples:\n" +
+        "  $ stash connect github:owner/repo                # current directory\n" +
+        "  $ stash connect ~/Notes github:owner/notes       # explicit path\n",
+    )
     .action(async (first: string, second: string | undefined, _opts: unknown, command: Command) => {
-      await runCommand("connect", async () => {
+      await runCommand(async () => {
         await runConnect(
           first,
           second,
@@ -760,36 +914,46 @@ export async function main(argv = process.argv, deps: CliDependencies = {}): Pro
             stashPath,
             getService,
           },
-          ui,
+          { input, output: stdout },
+          stdout,
+          colors,
         );
       });
     });
 
   program
     .command("disconnect")
-    .description("Disconnect a stash path or URI")
-    .argument("[first]", "Path or URI")
-    .argument("[second]", "URI when an explicit path is provided")
+    .description("Disconnect a stash (defaults to current directory)")
+    .argument("[path-or-uri]", "Stash path or connection URI to drop")
+    .argument("[uri]", "Connection URI when the first argument is a path")
+    .addHelpText(
+      "after",
+      "\nExamples:\n" +
+        "  $ stash disconnect                              # current directory, only connection\n" +
+        "  $ stash disconnect ~/Notes                       # explicit path, only connection\n" +
+        "  $ stash disconnect ~/Notes github:owner/notes    # explicit path + URI\n",
+    )
     .action(async (first: string | undefined, second: string | undefined) => {
-      await runCommand("disconnect", async () => {
-        await runDisconnect(first, second, { cwd, stashPath }, ui);
+      await runCommand(async () => {
+        await runDisconnect(first, second, { cwd, stashPath }, stdout, colors);
       });
     });
 
   program
     .command("relink")
-    .description("Relink a stash from one path to another")
-    .argument("<oldPath>", "Current or missing path")
-    .argument("<newPath>", "New existing path")
+    .description("Move a stash to a new path (use after renaming or moving the folder)")
+    .argument("<old-path>", "Current path of the stash (may no longer exist)")
+    .argument("<new-path>", "New path of the folder")
     .option("--dangerously-allow-git", "Allow relinking to a git repository")
     .action(async (oldPath: string, newPath: string, options: { dangerouslyAllowGit?: boolean }) => {
-      await runCommand("relink", async () => {
+      await runCommand(async () => {
         await runRelink(
           oldPath,
           newPath,
           options.dangerouslyAllowGit === true,
           { stashPath },
-          ui,
+          stdout,
+          colors,
         );
       });
     });
@@ -798,13 +962,14 @@ export async function main(argv = process.argv, deps: CliDependencies = {}): Pro
     .command("status")
     .description("Show registered stashes")
     .action(async () => {
-      await runCommand("status", async () => {
+      await runCommand(async () => {
         await runStatus(
           {
             stashPath,
             getService,
           },
-          ui,
+          stdout,
+          colors,
         );
       });
     });
@@ -813,14 +978,14 @@ export async function main(argv = process.argv, deps: CliDependencies = {}): Pro
     .command("start")
     .description("Start background sync")
     .action(async () =>
-      runCommand("start", async () => runStart(await getService(), ui)),
+      runCommand(async () => runStart(await getService(), stdout, colors)),
     );
 
   program
     .command("stop")
     .description("Stop background sync")
     .action(async () =>
-      runCommand("stop", async () => runStop(await getService(), ui)),
+      runCommand(async () => runStop(await getService(), stdout)),
     );
 
   program
