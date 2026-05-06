@@ -17,6 +17,7 @@ type RunResult = {
   stdout: string;
   stderr: string;
   config: GlobalConfig;
+  configWrites: number;
   calls: ServiceCalls;
 };
 
@@ -67,6 +68,7 @@ async function runMain(
   );
   let stdout = "";
   let stderr = "";
+  let configWrites = 0;
   const calls: ServiceCalls = {
     install: 0,
     uninstall: 0,
@@ -78,6 +80,7 @@ async function runMain(
     stashPath: getTestStashPath(cwd),
     readGlobalConfig: async () => structuredClone(config),
     writeGlobalConfig: async (nextConfig) => {
+      configWrites += 1;
       config = structuredClone(nextConfig);
     },
     service: {
@@ -111,7 +114,7 @@ async function runMain(
     } as NodeJS.WriteStream,
   });
 
-  return { stdout, stderr, config, calls };
+  return { stdout, stderr, config, configWrites, calls };
 }
 
 test("connect creates a new stash record and stores provider globals separately", async () => {
@@ -154,6 +157,30 @@ test("connect is idempotent for the same uri", async () => {
     assert.deepEqual(await listStashIds(getTestStashPath(dir)), [(
       await readOnlyStashRecord(getTestStashPath(dir))
     ).id]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("connect skips rewriting global config when provider globals are unchanged", async () => {
+  const dir = await makeTempDir("stash-cli-connect-global-unchanged");
+
+  try {
+    const result = await runMain(dir, ["connect", "github:user/repo"], {
+      config: {
+        providers: {
+          github: { token: "test-token" },
+        },
+        background: {
+          stashes: [],
+        },
+      },
+    });
+
+    assert.equal(result.configWrites, 0);
+    assert.deepEqual(result.config.providers.github, { token: "test-token" });
+    const { record } = await readOnlyStashRecord(getTestStashPath(dir));
+    assert.deepEqual(record.connections, [{ provider: "github", config: { id: "user/repo" } }]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -18,8 +18,8 @@ function fakeRegistry(fake: FakeProvider) {
   return { fake: TestProvider as any };
 }
 
-function lockPath(dir: string): string {
-  return join(dir, ".stash", "sync.lock");
+function lockPath(metadataDir: string): string {
+  return join(metadataDir, "sync.lock");
 }
 
 function lockPayload(startedAt: string): string {
@@ -36,19 +36,19 @@ function lockPayload(startedAt: string): string {
 
 test("sync lock: lock acquired and released on successful sync", async () => {
   const fake = new FakeProvider();
-  const { stash, dir } = await makeStash(
+  const { stash, metadataDir } = await makeStash(
     { "hello.md": "hello" },
     { providers: fakeRegistry(fake) },
   );
   await stash.connect({ name: "fake", provider: "fake", repo: "r" });
 
   await stash.sync();
-  assert.equal(existsSync(lockPath(dir)), false);
+  assert.equal(existsSync(lockPath(metadataDir)), false);
 });
 
 test("sync lock: lock released when sync fails", async () => {
   const fake = new FakeProvider();
-  const { stash, dir } = await makeStash(
+  const { stash, metadataDir } = await makeStash(
     { "hello.md": "hello" },
     { providers: fakeRegistry(fake) },
   );
@@ -59,41 +59,41 @@ test("sync lock: lock released when sync fails", async () => {
   };
 
   await assert.rejects(stash.sync(), /push failed/);
-  assert.equal(existsSync(lockPath(dir)), false);
+  assert.equal(existsSync(lockPath(metadataDir)), false);
 });
 
 test("sync lock: SyncLockError when lock is held by another process", async () => {
   const fake = new FakeProvider();
-  const { stash, dir } = await makeStash({}, { providers: fakeRegistry(fake) });
+  const { stash, metadataDir } = await makeStash({}, { providers: fakeRegistry(fake) });
   await stash.connect({ name: "fake", provider: "fake", repo: "r" });
 
-  await writeFile(lockPath(dir), lockPayload(new Date().toISOString()), "utf8");
+  await writeFile(lockPath(metadataDir), lockPayload(new Date().toISOString()), "utf8");
   await assert.rejects(stash.sync(), SyncLockError);
 });
 
 test("sync lock: stale lock is reclaimed", async () => {
   const fake = new FakeProvider();
-  const { stash, dir } = await makeStash(
+  const { stash, metadataDir } = await makeStash(
     { "hello.md": "hello" },
     { providers: fakeRegistry(fake) },
   );
   await stash.connect({ name: "fake", provider: "fake", repo: "r" });
 
   const stale = new Date(Date.now() - 15 * 60 * 1_000).toISOString();
-  await writeFile(lockPath(dir), lockPayload(stale), "utf8");
+  await writeFile(lockPath(metadataDir), lockPayload(stale), "utf8");
   await stash.sync();
-  assert.equal(existsSync(lockPath(dir)), false);
+  assert.equal(existsSync(lockPath(metadataDir)), false);
 });
 
 test("sync lock: stale reclaim race throws SyncLockError", async () => {
   const fake = new FakeProvider();
-  const { stash, dir } = await makeStash(
+  const { stash, metadataDir } = await makeStash(
     { "hello.md": "hello" },
     { providers: fakeRegistry(fake) },
   );
   await stash.connect({ name: "fake", provider: "fake", repo: "r" });
 
-  const lock = lockPath(dir);
+  const lock = lockPath(metadataDir);
   const stale = new Date(Date.now() - 15 * 60 * 1_000).toISOString();
   await writeFile(lock, lockPayload(stale), "utf8");
 
@@ -113,7 +113,7 @@ test("sync lock: stale reclaim race throws SyncLockError", async () => {
 
 test("sync lock: in-process single flight throws SyncLockError", async () => {
   const fake = new FakeProvider();
-  const { stash, dir } = await makeStash(
+  const { stash, metadataDir } = await makeStash(
     { "hello.md": "hello" },
     { providers: fakeRegistry(fake) },
   );
@@ -128,5 +128,5 @@ test("sync lock: in-process single flight throws SyncLockError", async () => {
   const firstSync = stash.sync();
   await assert.rejects(stash.sync(), SyncLockError);
   await firstSync;
-  assert.equal(existsSync(lockPath(dir)), false);
+  assert.equal(existsSync(lockPath(metadataDir)), false);
 });

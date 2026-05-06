@@ -14,7 +14,7 @@ export class SyncLockError extends Error {
 
 export class GitRepoError extends Error {
   constructor(
-    message = "git repository detected — run `stash config set allow-git true` to allow syncing",
+    message = "git repository detected — pass `--dangerously-allow-git` when connecting or relinking this folder",
   ) {
     super(message);
     this.name = "GitRepoError";
@@ -23,7 +23,7 @@ export class GitRepoError extends Error {
 
 export class MultipleConnectionsError extends Error {
   constructor(
-    message = "Only one connection per stash — disconnect the existing connection before adding another (or fix .stash/config.json if it lists more than one).",
+    message = "Only one connection per stash — disconnect the existing connection before adding another (or fix the stash.json metadata if it lists more than one).",
   ) {
     super(message);
     this.name = "MultipleConnectionsError";
@@ -38,8 +38,8 @@ export class MigrationError extends Error {
 }
 
 export class InvalidUriError extends Error {
-  constructor(uri: string) {
-    super(`Invalid URI: ${uri}`);
+  constructor(uri: string, reason = "expected <provider>:<id>") {
+    super(`Invalid URI: ${uri} (${reason})`);
     this.name = "InvalidUriError";
   }
 }

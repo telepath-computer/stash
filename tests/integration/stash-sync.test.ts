@@ -29,7 +29,7 @@ function deferred() {
 
 test("sync: first sync pushes all local files", async () => {
   const fake = new FakeProvider();
-  const { stash, dir } = await makeStash(
+  const { stash, metadataDir } = await makeStash(
     { "hello.md": "hello", "notes/todo.md": "buy milk" },
     { providers: fakeRegistry(fake) },
   );
@@ -41,9 +41,9 @@ test("sync: first sync pushes all local files", async () => {
   assert.equal(fake.files.get("notes/todo.md"), "buy milk");
   assert.equal(typeof fake.snapshot["hello.md"]?.hash, "string");
 
-  const localSnapshot = JSON.parse(await readFile(join(dir, ".stash", "snapshot.json"), "utf8"));
+  const localSnapshot = JSON.parse(await readFile(join(metadataDir, "snapshot.json"), "utf8"));
   assert.deepEqual(localSnapshot, fake.snapshot);
-  assert.equal(await readFile(join(dir, ".stash", "snapshot", "hello.md"), "utf8"), "hello");
+  assert.equal(await readFile(join(metadataDir, "snapshot", "hello.md"), "utf8"), "hello");
 });
 
 test("sync: first sync pulls all remote files", async () => {
@@ -57,14 +57,14 @@ test("sync: first sync pulls all remote files", async () => {
       "data/config.json": { hash: hashBuffer(Buffer.from("{}", "utf8")) },
     },
   });
-  const { stash, dir } = await makeStash({}, { providers: fakeRegistry(fake) });
+  const { stash, dir, metadataDir } = await makeStash({}, { providers: fakeRegistry(fake) });
   await stash.connect({ name: "fake", provider: "fake", repo: "r" });
 
   await stash.sync();
 
   assert.equal(await readFile(join(dir, "readme.md"), "utf8"), "welcome");
   assert.equal(await readFile(join(dir, "data", "config.json"), "utf8"), "{}");
-  const snapshot = JSON.parse(await readFile(join(dir, ".stash", "snapshot.json"), "utf8"));
+  const snapshot = JSON.parse(await readFile(join(metadataDir, "snapshot.json"), "utf8"));
   assert.deepEqual(snapshot, fake.snapshot);
 });
 
@@ -186,7 +186,7 @@ test("sync: single-flight guard rejects concurrent sync", async () => {
 
 test("sync: snapshot writes text files and skips binary files", async () => {
   const fake = new FakeProvider();
-  const { stash, dir } = await makeStash(
+  const { stash, metadataDir } = await makeStash(
     {
       "text.md": "hello",
       "img.bin": Buffer.from([0xff, 0xfe, 0x00]),
@@ -196,23 +196,23 @@ test("sync: snapshot writes text files and skips binary files", async () => {
   await stash.connect({ name: "fake", provider: "fake", repo: "r" });
   await stash.sync();
 
-  assert.equal(await readFile(join(dir, ".stash", "snapshot", "text.md"), "utf8"), "hello");
-  assert.equal(existsSync(join(dir, ".stash", "snapshot", "img.bin")), false);
+  assert.equal(await readFile(join(metadataDir, "snapshot", "text.md"), "utf8"), "hello");
+  assert.equal(existsSync(join(metadataDir, "snapshot", "img.bin")), false);
 });
 
 test("sync: deleting a file removes it from snapshot", async () => {
   const fake = new FakeProvider();
-  const { stash, dir } = await makeStash(
+  const { stash, dir, metadataDir } = await makeStash(
     { "hello.md": "hello" },
     { providers: fakeRegistry(fake) },
   );
   await stash.connect({ name: "fake", provider: "fake", repo: "r" });
   await stash.sync();
-  assert.equal(existsSync(join(dir, ".stash", "snapshot", "hello.md")), true);
+  assert.equal(existsSync(join(metadataDir, "snapshot", "hello.md")), true);
 
   await unlink(join(dir, "hello.md"));
   await stash.sync();
-  assert.equal(existsSync(join(dir, ".stash", "snapshot", "hello.md")), false);
+  assert.equal(existsSync(join(metadataDir, "snapshot", "hello.md")), false);
 });
 
 test("sync: first sync with identical content on both sides skips file writes", async () => {
@@ -226,7 +226,7 @@ test("sync: first sync with identical content on both sides skips file writes", 
       "notes/todo.md": { hash: hashBuffer(Buffer.from("buy milk", "utf8")) },
     },
   });
-  const { stash, dir } = await makeStash(
+  const { stash, dir, metadataDir } = await makeStash(
     { "hello.md": "hello", "notes/todo.md": "buy milk" },
     { providers: fakeRegistry(fake) },
   );
@@ -242,35 +242,35 @@ test("sync: first sync with identical content on both sides skips file writes", 
   assert.equal(await readFile(join(dir, "hello.md"), "utf8"), "hello");
   assert.equal(await readFile(join(dir, "notes/todo.md"), "utf8"), "buy milk");
 
-  const localSnapshot = JSON.parse(await readFile(join(dir, ".stash", "snapshot.json"), "utf8"));
+  const localSnapshot = JSON.parse(await readFile(join(metadataDir, "snapshot.json"), "utf8"));
   assert.equal(localSnapshot["hello.md"]?.hash, hashBuffer(Buffer.from("hello", "utf8")));
   assert.equal(localSnapshot["notes/todo.md"]?.hash, hashBuffer(Buffer.from("buy milk", "utf8")));
 
-  assert.equal(await readFile(join(dir, ".stash", "snapshot", "hello.md"), "utf8"), "hello");
+  assert.equal(await readFile(join(metadataDir, "snapshot", "hello.md"), "utf8"), "hello");
   assert.equal(
-    await readFile(join(dir, ".stash", "snapshot", "notes/todo.md"), "utf8"),
+    await readFile(join(metadataDir, "snapshot", "notes/todo.md"), "utf8"),
     "buy milk",
   );
 });
 
 test("sync: multiple connections throws", async () => {
   const fake = new FakeProvider();
-  const { stash, dir } = await makeStash(
+  const { stash, metadataDir, stashPath } = await makeStash(
     { "hello.md": "hello" },
     { providers: fakeRegistry(fake) },
   );
   await stash.connect({ name: "first", provider: "fake", repo: "r1" });
   // Bypass the connect guard by writing a second connection directly
-  const configPath = join(dir, ".stash", "config.json");
-  const config = JSON.parse(await readFile(configPath, "utf8"));
-  config.connections.second = { provider: "fake", repo: "r2" };
-  await writeFile(configPath, JSON.stringify(config, null, 2), "utf8");
+  const recordPath = join(metadataDir, "stash.json");
+  const record = JSON.parse(await readFile(recordPath, "utf8"));
+  record.connections.push({ provider: "fake", config: { name: "second", repo: "r2" } });
+  await writeFile(recordPath, JSON.stringify(record, null, 2), "utf8");
   // Reload to pick up both connections
   const { Stash } = await import("../../src/stash.ts");
   const reloaded = await Stash.load(
-    dir,
+    stash.id,
     { providers: {}, background: { stashes: [] } },
-    { providers: fakeRegistry(fake) },
+    { providers: fakeRegistry(fake), stashPath },
   );
 
   await assert.rejects(reloaded.sync(), MultipleConnectionsError);
@@ -280,7 +280,7 @@ test("sync: multiple connections throws", async () => {
 
 test("sync: skip/skip mutations with changed snapshot still pushes snapshot", async () => {
   const fake = new FakeProvider();
-  const { stash, dir } = await makeStash(
+  const { stash, dir, metadataDir } = await makeStash(
     { "hello.md": "hello" },
     { providers: fakeRegistry(fake) },
   );
@@ -300,7 +300,7 @@ test("sync: skip/skip mutations with changed snapshot still pushes snapshot", as
   assert.equal(lastPush.files.size, 0, "no file content should be pushed");
   assert.deepEqual(lastPush.deletions, [], "no deletions should be pushed");
 
-  const localSnapshot = JSON.parse(await readFile(join(dir, ".stash", "snapshot.json"), "utf8"));
+  const localSnapshot = JSON.parse(await readFile(join(metadataDir, "snapshot.json"), "utf8"));
   assert.equal(localSnapshot["hello.md"]?.hash, hashBuffer(Buffer.from("updated", "utf8")));
 });
 
@@ -347,7 +347,10 @@ test("sync: preserves local edits made after scan but before push (pre-push race
   const bobRemote = "line1\nline2\nline3\nBOB_END\n";
 
   const fake = new FakeProvider();
-  const { stash, dir } = await makeStash({ "doc.md": baseline }, { providers: fakeRegistry(fake) });
+  const { stash, dir } = await makeStash(
+    { "doc.md": baseline },
+    { providers: fakeRegistry(fake) },
+  );
   await stash.connect({ name: "fake", provider: "fake", repo: "r" });
   await stash.sync();
 
@@ -388,7 +391,10 @@ test("sync: preserves local edits made after push but before apply (post-push ra
   const bobRemote = "line1\nline2\nline3\nBOB_END\n";
 
   const fake = new FakeProvider();
-  const { stash, dir } = await makeStash({ "doc.md": baseline }, { providers: fakeRegistry(fake) });
+  const { stash, dir } = await makeStash(
+    { "doc.md": baseline },
+    { providers: fakeRegistry(fake) },
+  );
   await stash.connect({ name: "fake", provider: "fake", repo: "r" });
   await stash.sync();
 
@@ -432,7 +438,10 @@ test("sync: drift retries are bounded and failed cycle does not apply/save", asy
   const bobRemote = "line1\nline2\nline3\nBOB_END\n";
 
   const fake = new FakeProvider();
-  const { stash, dir } = await makeStash({ "doc.md": baseline }, { providers: fakeRegistry(fake) });
+  const { stash, dir, metadataDir } = await makeStash(
+    { "doc.md": baseline },
+    { providers: fakeRegistry(fake) },
+  );
   await stash.connect({ name: "fake", provider: "fake", repo: "r" });
   await stash.sync();
 
@@ -440,7 +449,7 @@ test("sync: drift retries are bounded and failed cycle does not apply/save", asy
   fake.snapshot["doc.md"] = { hash: hashBuffer(Buffer.from(bobRemote, "utf8")) };
   await writeFiles(dir, { "doc.md": aliceEarly });
 
-  const beforeSnapshot = JSON.parse(await readFile(join(dir, ".stash", "snapshot.json"), "utf8"));
+  const beforeSnapshot = JSON.parse(await readFile(join(metadataDir, "snapshot.json"), "utf8"));
   fake.fetchCalls = 0;
   fake.pushCalls = 0;
 
@@ -451,13 +460,13 @@ test("sync: drift retries are bounded and failed cycle does not apply/save", asy
   assert.equal(fake.pushCalls, 0);
   assert.equal(await readFile(join(dir, "doc.md"), "utf8"), aliceEarly);
 
-  const afterSnapshot = JSON.parse(await readFile(join(dir, ".stash", "snapshot.json"), "utf8"));
+  const afterSnapshot = JSON.parse(await readFile(join(metadataDir, "snapshot.json"), "utf8"));
   assert.deepEqual(afterSnapshot, beforeSnapshot);
 });
 
 test("sync: case-only rename syncs successfully", async () => {
   const fake = new FakeProvider();
-  const { stash, dir } = await makeStash(
+  const { stash, dir, metadataDir } = await makeStash(
     { "notes/Arabella.md": "hello" },
     { providers: fakeRegistry(fake) },
   );
@@ -477,7 +486,7 @@ test("sync: case-only rename syncs successfully", async () => {
   // Old-case path should be gone from remote
   assert.equal(fake.files.has("notes/Arabella.md"), false);
   // Snapshot updated to new casing
-  const snapshot = JSON.parse(await readFile(join(dir, ".stash", "snapshot.json"), "utf8"));
+  const snapshot = JSON.parse(await readFile(join(metadataDir, "snapshot.json"), "utf8"));
   assert.ok(snapshot["notes/arabella.md"]);
   assert.equal(snapshot["notes/Arabella.md"], undefined);
 });
@@ -579,7 +588,7 @@ test("sync: nested directory case rename applies correctly", async () => {
 
 test("sync: true deletion still works alongside casing check", async () => {
   const fake = new FakeProvider();
-  const { stash, dir } = await makeStash(
+  const { stash, dir, metadataDir } = await makeStash(
     { "notes/Arabella.md": "hello", "other.md": "keep" },
     { providers: fakeRegistry(fake) },
   );
@@ -592,6 +601,6 @@ test("sync: true deletion still works alongside casing check", async () => {
 
   assert.equal(fake.files.has("notes/Arabella.md"), false);
   assert.equal(fake.files.get("other.md"), "keep");
-  const snapshot = JSON.parse(await readFile(join(dir, ".stash", "snapshot.json"), "utf8"));
+  const snapshot = JSON.parse(await readFile(join(metadataDir, "snapshot.json"), "utf8"));
   assert.equal(snapshot["notes/Arabella.md"], undefined);
 });

@@ -7,11 +7,9 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
-  realpathSync,
   renameSync,
   rmSync,
   statSync,
-  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -32,8 +30,6 @@ import {
   getStashPath,
   normalizeGlobalConfig,
 } from "./global-config.ts";
-import { readLocalConfig, writeLocalConfig } from "./local-config.ts";
-import { ensureMigration } from "./migrations.ts";
 import { providers as defaultProviders } from "./providers/index.ts";
 import type {
   ChangeSet,
@@ -61,7 +57,6 @@ export type StashEvents = {
 type StashOptions = {
   providers?: Record<string, ProviderClass>;
   stashPath?: string;
-  metadataDir?: string;
 };
 
 function cloneSnapshot(snapshot: Record<string, SnapshotEntry>): Record<string, SnapshotEntry> {
@@ -70,21 +65,6 @@ function cloneSnapshot(snapshot: Record<string, SnapshotEntry>): Record<string, 
 
 function sortPaths(paths: Iterable<string>): string[] {
   return [...paths].sort((a, b) => a.localeCompare(b));
-}
-
-function stashConnectionsFromLocalConfig(
-  connections: Record<string, ConnectionConfig>,
-): StashRecord["connections"] {
-  return Object.entries(connections).map(([name, connection]) => {
-    const { provider, ...fields } = connection;
-    return {
-      provider,
-      config: {
-        name,
-        ...fields,
-      },
-    };
-  });
 }
 
 const STALE_SYNC_LOCK_MS = 10 * 60 * 1000;
@@ -119,71 +99,20 @@ export class Stash extends Emitter<StashEvents> {
     };
     this.dir = record.path;
     this.stashPath = options?.stashPath ?? getStashPath();
-    this.metadataDir = options?.metadataDir ?? getStashDirPath(id, this.stashPath);
+    this.metadataDir = getStashDirPath(id, this.stashPath);
     this.globalConfig = globalConfig;
     this._connections = this.connectionsFromRecord(this.record);
     this.providerRegistry = options?.providers ?? defaultProviders;
   }
 
-  static async load(
-    idOrDir: string,
-    globalConfig: GlobalConfig,
-    options?: StashOptions,
-  ): Promise<Stash> {
+  static async load(id: string, globalConfig: GlobalConfig, options?: StashOptions): Promise<Stash> {
     const stashPath = options?.stashPath ?? getStashPath();
-    const directRecordPath = getStashRecordPath(idOrDir, stashPath);
+    const directRecordPath = getStashRecordPath(id, stashPath);
     if (existsSync(directRecordPath)) {
       const record = JSON.parse(readFileSync(directRecordPath, "utf8")) as StashRecord;
-      return new Stash(idOrDir, record, normalizeGlobalConfig(globalConfig), options);
+      return new Stash(id, record, normalizeGlobalConfig(globalConfig), options);
     }
-
-    const localStashDir = join(idOrDir, ".stash");
-    if (!existsSync(localStashDir)) {
-      throw new Error(
-        "This directory is not a stash. Run `stash connect <provider> <name>` first.",
-      );
-    }
-
-    await ensureMigration(idOrDir);
-    const localConfig = await readLocalConfig(idOrDir);
-
-    const idPath = join(localStashDir, ".stash-id");
-    const id = existsSync(idPath) ? readFileSync(idPath, "utf8").trim() : null;
-    const resolvedMetadataDir = realpathSync(localStashDir);
-    const resolvedId = id ?? resolvedMetadataDir.split("/").at(-1) ?? null;
-
-    if (resolvedId) {
-      const recordPath = getStashRecordPath(resolvedId, stashPath);
-      if (existsSync(recordPath)) {
-        const record = JSON.parse(readFileSync(recordPath, "utf8")) as StashRecord;
-        const recordWithCompatConnections =
-          Object.keys(localConfig.connections).length > 0
-            ? {
-                ...record,
-                connections: stashConnectionsFromLocalConfig(localConfig.connections),
-              }
-            : record;
-        return new Stash(
-          resolvedId,
-          recordWithCompatConnections,
-          normalizeGlobalConfig(globalConfig),
-          options,
-        );
-      }
-    }
-
-    return new Stash(
-      resolvedId ?? `legacy:${idOrDir}`,
-      {
-        path: idOrDir,
-        connections: stashConnectionsFromLocalConfig(localConfig.connections),
-      },
-      normalizeGlobalConfig(globalConfig),
-      {
-        ...options,
-        metadataDir: localStashDir,
-      },
-    );
+    throw new Error(`Stash not found: ${id}`);
   }
 
   static async create(
@@ -250,14 +179,6 @@ export class Stash extends Emitter<StashEvents> {
     });
   }
 
-  private writeLegacyLocalLink(): void {
-    const localStashDir = join(this.dir, ".stash");
-    if (!existsSync(localStashDir)) {
-      symlinkSync(this.metadataDir, localStashDir, "dir");
-    }
-    writeFileSync(join(this.metadataDir, ".stash-id"), `${this.id}\n`, "utf8");
-  }
-
   async connect({ name, ...configFields }: { name: string } & ConnectionConfig): Promise<void> {
     const { provider, ...fields } = configFields;
     const existing = Object.keys(this._connections);
@@ -265,12 +186,12 @@ export class Stash extends Emitter<StashEvents> {
       throw new MultipleConnectionsError();
     }
     this._connections[name] = { provider, ...fields };
-    await this.persistLocalConfig();
+    await this.persistRecord();
   }
 
   async disconnect(name: string): Promise<void> {
     delete this._connections[name];
-    await this.persistLocalConfig();
+    await this.persistRecord();
   }
 
   async sync(): Promise<void> {
@@ -910,17 +831,9 @@ export class Stash extends Emitter<StashEvents> {
     return readFileSync(snapshotPath, "utf8");
   }
 
-  private async persistLocalConfig(): Promise<void> {
+  private async persistRecord(): Promise<void> {
     this.updateRecordConnections();
-    if (this.metadataDir === getStashDirPath(this.id, this.stashPath)) {
-      await writeJsonFile(getStashRecordPath(this.id, this.stashPath), this.record);
-    }
-    this.writeLegacyLocalLink();
-    const currentConfig = await readLocalConfig(this.dir);
-    await writeLocalConfig(this.dir, {
-      ...currentConfig,
-      connections: this._connections,
-    });
+    await writeJsonFile(getStashRecordPath(this.id, this.stashPath), this.record);
   }
 
   private acquireSyncLock(): void {

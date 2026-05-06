@@ -60,6 +60,7 @@ type RegistrySnapshot = {
   live: Map<string, DesiredEntry>;
   missing: Map<string, DesiredEntry>;
   tombstones: Set<string>;
+  orphans: Set<string>;
 };
 
 type RunningEntry = {
@@ -169,6 +170,7 @@ export class BackgroundDaemon {
   private started = false;
   private stopping = false;
   private reloadPromise: Promise<void> | null = null;
+  private pendingReload = false;
   private pollTimer: NodeJS.Timeout | null = null;
 
   constructor(options: BackgroundDaemonOptions = {}) {
@@ -268,44 +270,53 @@ export class BackgroundDaemon {
 
   private async reload(): Promise<void> {
     if (this.reloadPromise) {
+      this.pendingReload = true;
       return this.reloadPromise;
     }
 
     this.reloadPromise = (async () => {
-      const globalConfig = normalizeGlobalConfig(await this.readGlobalConfigFn());
-      const snapshot = await this.readRegistrySnapshot(globalConfig);
-      const retainedIds = new Set<string>([
-        ...snapshot.live.keys(),
-        ...snapshot.missing.keys(),
-        ...snapshot.tombstones,
-      ]);
+      do {
+        this.pendingReload = false;
 
-      for (const id of snapshot.tombstones) {
-        await this.stopRunning(id);
-        await this.deleteTombstoneDir(id);
-      }
+        const globalConfig = normalizeGlobalConfig(await this.readGlobalConfigFn());
+        const snapshot = await this.readRegistrySnapshot(globalConfig);
+        const retainedIds = new Set<string>([
+          ...snapshot.live.keys(),
+          ...snapshot.missing.keys(),
+          ...snapshot.tombstones,
+        ]);
 
-      for (const [id] of snapshot.missing) {
-        await this.stopRunning(id);
-        await this.persistMissingStatus(id);
-      }
+        for (const id of snapshot.orphans) {
+          await this.deleteOrphanDirIfOld(id);
+        }
 
-      for (const id of [...this.running.keys()]) {
-        if (!retainedIds.has(id)) {
+        for (const id of snapshot.tombstones) {
           await this.stopRunning(id);
+          await this.deleteTombstoneDir(id);
         }
-      }
 
-      for (const [id, entry] of snapshot.live) {
-        const current = this.running.get(id);
-        if (current && current.key === entry.key) {
-          continue;
-        }
-        if (current) {
+        for (const [id] of snapshot.missing) {
           await this.stopRunning(id);
+          await this.persistMissingStatus(id);
         }
-        await this.startWatch(entry, globalConfig);
-      }
+
+        for (const id of [...this.running.keys()]) {
+          if (!retainedIds.has(id)) {
+            await this.stopRunning(id);
+          }
+        }
+
+        for (const [id, entry] of snapshot.live) {
+          const current = this.running.get(id);
+          if (current && current.key === entry.key) {
+            continue;
+          }
+          if (current) {
+            await this.stopRunning(id);
+          }
+          await this.startWatch(entry, globalConfig);
+        }
+      } while (this.pendingReload && !this.stopping);
     })();
 
     try {
@@ -351,10 +362,12 @@ export class BackgroundDaemon {
     const live = new Map<string, DesiredEntry>();
     const missing = new Map<string, DesiredEntry>();
     const tombstones = new Set<string>();
+    const orphans = new Set<string>();
 
     for (const id of await this.listStashIds()) {
       const record = await this.readStashRecordIfExists(id);
       if (!record) {
+        orphans.add(id);
         continue;
       }
 
@@ -385,7 +398,7 @@ export class BackgroundDaemon {
       }
     }
 
-    return { live, missing, tombstones };
+    return { live, missing, tombstones, orphans };
   }
 
   private async listStashIds(): Promise<string[]> {
@@ -470,15 +483,12 @@ export class BackgroundDaemon {
   }
 
   private async runStartupGc(): Promise<void> {
-    for (const id of await this.listStashIds()) {
-      const record = await this.readStashRecordIfExists(id);
-      if (!record) {
-        await this.deleteOrphanDirIfOld(id);
-        continue;
-      }
-      if (record.connections.length === 0) {
-        await this.deleteTombstoneDir(id);
-      }
+    const snapshot = await this.readRegistrySnapshot(normalizeGlobalConfig(await this.readGlobalConfigFn()));
+    for (const id of snapshot.orphans) {
+      await this.deleteOrphanDirIfOld(id);
+    }
+    for (const id of snapshot.tombstones) {
+      await this.deleteTombstoneDir(id);
     }
   }
 }

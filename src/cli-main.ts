@@ -79,13 +79,7 @@ function getCliValue(
   valuesFromCli: Record<string, string | boolean | undefined>,
 ): string | undefined {
   const value = valuesFromCli[field.name];
-  if (typeof value === "string") {
-    return value;
-  }
-  if (field.name === "id" && typeof valuesFromCli.repo === "string") {
-    return valuesFromCli.repo;
-  }
-  return undefined;
+  return typeof value === "string" ? value : undefined;
 }
 
 async function promptField(field: ConfigItem): Promise<string> {
@@ -118,9 +112,6 @@ async function collectFields(
 function addFieldOptions(command: Command, fields: ConfigItem[]): void {
   for (const field of fields) {
     command.addOption(new Option(`--${field.name} <value>`, field.label));
-    if (field.name === "id") {
-      command.addOption(new Option("--repo <value>", `${field.label} (legacy alias)`));
-    }
   }
 }
 
@@ -145,6 +136,15 @@ function sameConnection(
   right: StashRecord["connections"][number],
 ): boolean {
   return left.provider === right.provider && JSON.stringify(left.config) === JSON.stringify(right.config);
+}
+
+function sameStringRecord(left: Record<string, string>, right: Record<string, string>): boolean {
+  const leftKeys = Object.keys(left).sort((a, b) => a.localeCompare(b));
+  const rightKeys = Object.keys(right).sort((a, b) => a.localeCompare(b));
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+  return leftKeys.every((key, index) => key === rightKeys[index] && left[key] === right[key]);
 }
 
 async function isExecutable(path: string): Promise<boolean> {
@@ -320,20 +320,23 @@ async function runConnect(
   const parsed = parseUri(uri);
   const provider = getProvider(parsed.provider);
   let globalConfig = await deps.readGlobalConfig();
+  const existingGlobalValues = getProviderConfig(globalConfig, parsed.provider);
   const globalValues = await collectFields(
     getGlobalConfigItems(provider),
     valuesFromCli,
-    getProviderConfig(globalConfig, parsed.provider),
+    existingGlobalValues,
   );
 
   new provider({
-    ...getProviderConfig(globalConfig, parsed.provider),
+    ...existingGlobalValues,
     ...globalValues,
     ...parsed.config,
   });
 
-  globalConfig = setProviderConfig(globalConfig, parsed.provider, globalValues);
-  await deps.writeGlobalConfig(globalConfig);
+  if (!sameStringRecord(globalValues, existingGlobalValues)) {
+    globalConfig = setProviderConfig(globalConfig, parsed.provider, globalValues);
+    await deps.writeGlobalConfig(globalConfig);
+  }
 
   const stashPath = deps.stashPath ?? getStashPath();
   const outcome = await withRegistryLock(

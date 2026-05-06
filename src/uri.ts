@@ -5,10 +5,18 @@ export function parseUri(uri: string): { provider: string; config: { id: string 
   if (separator < 0) {
     throw new InvalidUriError(uri);
   }
+  const provider = uri.slice(0, separator);
+  const id = uri.slice(separator + 1);
+  if (!provider) {
+    throw new InvalidUriError(uri, "missing provider before ':'");
+  }
+  if (!id) {
+    throw new InvalidUriError(uri, "missing id after ':'");
+  }
   return {
-    provider: uri.slice(0, separator),
+    provider,
     config: {
-      id: uri.slice(separator + 1),
+      id,
     },
   };
 }

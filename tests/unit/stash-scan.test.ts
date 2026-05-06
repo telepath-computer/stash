@@ -59,6 +59,7 @@ test("scan: new file on disk is added when absent in snapshot", async () => {
 test("scan: dotfiles, symlinks, and .stash are ignored", async () => {
   const { stash, dir } = await makeStash({ "visible.md": "public" });
   await writeFiles(dir, { ".hidden": "secret", ".config/settings.json": "{}" });
+  await mkdir(join(dir, ".stash"), { recursive: true });
   await writeFile(join(dir, ".stash", "noise.txt"), "ignored", "utf8");
   await mkdir(join(dir, "links"), { recursive: true });
   await symlink(join(dir, "visible.md"), join(dir, "links", "visible-link.md"));

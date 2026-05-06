@@ -158,20 +158,19 @@ export async function withRegistryLock<T>(
   } catch (error) {
     operationError = error;
   } finally {
-    cleanupListeners();
-  }
-
-  if (acquired) {
-    try {
-      const currentPayload = readFileSync(lockPath, "utf8");
-      if (currentPayload === payload) {
-        unlinkSync(lockPath);
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        cleanupError = error;
+    if (acquired) {
+      try {
+        const currentPayload = readFileSync(lockPath, "utf8");
+        if (currentPayload === payload) {
+          unlinkSync(lockPath);
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          cleanupError = error;
+        }
       }
     }
+    cleanupListeners();
   }
 
   if (operationError) {

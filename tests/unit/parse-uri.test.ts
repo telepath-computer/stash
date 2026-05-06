@@ -20,3 +20,11 @@ test("parseUri preserves additional colons in the id", () => {
 test("parseUri throws when the uri is missing a colon", () => {
   assert.throws(() => parseUri("github"), InvalidUriError);
 });
+
+test("parseUri throws when the provider is empty", () => {
+  assert.throws(() => parseUri(":bucket"), /missing provider/i);
+});
+
+test("parseUri throws when the id is empty", () => {
+  assert.throws(() => parseUri("github:"), /missing id/i);
+});

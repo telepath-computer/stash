@@ -185,6 +185,88 @@ test("daemon: poll-only mode still reconciles new registry entries", async () =>
   }
 });
 
+test("daemon: queues one immediate follow-up reload when changes arrive mid-reconcile", async () => {
+  const workspace = await makeTempDir("stash-daemon-pending-reload");
+  const stashPath = join(workspace, "stash");
+  const configPath = join(stashPath, "config.json");
+  const dirA = join(workspace, "dir-a");
+  const dirB = join(workspace, "dir-b");
+  const started: string[] = [];
+  const stopped: string[] = [];
+  const callbacks = new Map<string, WatchCallback>();
+  let releaseStop: (() => void) | null = null;
+  let markStopEntered: (() => void) | null = null;
+  const stopEntered = new Promise<void>((resolve) => {
+    markStopEntered = resolve;
+  });
+  const stopGate = new Promise<void>((resolve) => {
+    releaseStop = resolve;
+  });
+
+  try {
+    await mkdir(dirA, { recursive: true });
+    await mkdir(dirB, { recursive: true });
+    await writeConfig(configPath, {
+      github: { token: "token-a" },
+    });
+    await writeStashRecord(stashPath, "stash-a", {
+      path: dirA,
+      connections: [{ provider: "github", config: { id: "user/repo-a" } }],
+    });
+
+    const daemon = new BackgroundDaemon({
+      configPath,
+      pollMs: 10_000,
+      subscribe: async (path, callback) => {
+        callbacks.set(path, callback as WatchCallback);
+        return {
+          unsubscribe: async () => {
+            callbacks.delete(path);
+          },
+        };
+      },
+      createWatch: async ({ stash }) => ({
+        start: async () => {
+          started.push(stash.id);
+        },
+        stop: async () => {
+          stopped.push(stash.id);
+          if (stash.id === "stash-a" && stopped.length === 1) {
+            markStopEntered?.();
+            await stopGate;
+          }
+        },
+      }),
+    });
+
+    await daemon.start();
+    assert.deepEqual(started, ["stash-a"]);
+
+    await writeConfig(configPath, {
+      github: { token: "token-b" },
+    });
+    callbacks.get(configPath)?.(null, [{ type: "update", path: configPath }]);
+    await stopEntered;
+
+    await writeStashRecord(stashPath, "stash-b", {
+      path: dirB,
+      connections: [{ provider: "github", config: { id: "user/repo-b" } }],
+    });
+    callbacks.get(stashPath)?.(null, [{ type: "create", path: join(stashPath, "stash-b") }]);
+
+    releaseStop?.();
+    await delay(80);
+
+    assert.deepEqual(stopped, ["stash-a"]);
+    assert.deepEqual(started, ["stash-a", "stash-a", "stash-b"]);
+
+    await daemon.stop();
+  } finally {
+    releaseStop?.();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
 test("daemon: writes missing status and revalidates tombstone deletion after stop", async () => {
   const workspace = await makeTempDir("stash-daemon-missing");
   const stashPath = join(workspace, "stash");
@@ -269,6 +351,49 @@ test("daemon: writes missing status and revalidates tombstone deletion after sto
     await daemon.stop();
   } finally {
     releaseStop?.();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("daemon: reload GC removes stale orphan dirs added after startup", async () => {
+  const workspace = await makeTempDir("stash-daemon-reload-orphan");
+  const stashPath = join(workspace, "stash");
+  const configPath = join(stashPath, "config.json");
+  const callbacks = new Map<string, WatchCallback>();
+
+  try {
+    await writeConfig(configPath, {});
+
+    const daemon = new BackgroundDaemon({
+      configPath,
+      pollMs: 10_000,
+      subscribe: async (path, callback) => {
+        callbacks.set(path, callback as WatchCallback);
+        return {
+          unsubscribe: async () => {
+            callbacks.delete(path);
+          },
+        };
+      },
+      createWatch: async () => {
+        throw new Error("no watches expected");
+      },
+    });
+
+    await daemon.start();
+
+    const orphanDir = join(stashPath, "old-orphan");
+    await mkdir(orphanDir, { recursive: true });
+    const oldDate = new Date(Date.now() - 10 * 60_000);
+    await utimes(orphanDir, oldDate, oldDate);
+
+    callbacks.get(stashPath)?.(null, [{ type: "create", path: orphanDir }]);
+    await delay(80);
+
+    assert.equal(existsSync(orphanDir), false);
+
+    await daemon.stop();
+  } finally {
     await rm(workspace, { recursive: true, force: true });
   }
 });
