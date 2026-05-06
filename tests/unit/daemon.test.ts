@@ -33,12 +33,28 @@ async function writeStashRecord(
   await writeFile(join(stashPath, id, "stash.json"), JSON.stringify(record, null, 2), "utf8");
 }
 
+async function waitFor(
+  check: () => boolean,
+  message: string,
+  timeoutMs = 500,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (check()) {
+      return;
+    }
+    await delay(10);
+  }
+  assert.fail(message);
+}
+
 test("daemon: reconciles registry entries, restarts on tuple changes, and stops removed stashes", async () => {
   const workspace = await makeTempDir("stash-daemon-registry");
   const stashPath = join(workspace, "stash");
   const configPath = join(stashPath, "config.json");
   const dirA = join(workspace, "dir-a");
   const dirB = join(workspace, "dir-b");
+  let daemon: BackgroundDaemon | null = null;
   const started: string[] = [];
   const stopped: string[] = [];
   const logs: string[] = [];
@@ -55,7 +71,7 @@ test("daemon: reconciles registry entries, restarts on tuple changes, and stops 
       connections: [{ provider: "github", config: { id: "user/repo-a" } }],
     });
 
-    const daemon = new BackgroundDaemon({
+    daemon = new BackgroundDaemon({
       configPath,
       pollMs: 20,
       log: (message) => logs.push(message),
@@ -97,7 +113,10 @@ test("daemon: reconciles registry entries, restarts on tuple changes, and stops 
       github: { token: "token-b" },
     });
     callbacks.get(configPath)?.(null, [{ type: "update", path: configPath }]);
-    await delay(30);
+    await waitFor(
+      () => started.length >= 2 && stopped.length >= 1,
+      "expected stash-a to restart after provider config changed",
+    );
 
     assert.deepEqual(started, ["stash-a", "stash-a"]);
     assert.deepEqual(stopped, ["stash-a"]);
@@ -107,21 +126,27 @@ test("daemon: reconciles registry entries, restarts on tuple changes, and stops 
       connections: [{ provider: "github", config: { id: "user/repo-b" } }],
     });
     callbacks.get(stashPath)?.(null, [{ type: "create", path: join(stashPath, "stash-b") }]);
-    await delay(30);
+    await waitFor(
+      () => started.length >= 3,
+      "expected stash-b to start after being added to the registry",
+    );
 
     assert.deepEqual(started, ["stash-a", "stash-a", "stash-b"]);
 
     await rm(join(stashPath, "stash-a"), { recursive: true, force: true });
     callbacks.get(stashPath)?.(null, [{ type: "delete", path: join(stashPath, "stash-a") }]);
-    await delay(30);
+    await waitFor(
+      () => stopped.length >= 2,
+      "expected stash-a to stop after being removed from the registry",
+    );
 
     assert.deepEqual(stopped, ["stash-a", "stash-a"]);
     assert.ok(logs.some((message) => message.includes("watching stash-a")));
     assert.ok(logs.some((message) => message.includes("watching stash-b")));
     assert.ok(logs.some((message) => message.includes("stopped watching stash-a")));
 
-    await daemon.stop();
   } finally {
+    await daemon?.stop();
     await rm(workspace, { recursive: true, force: true });
   }
 });
@@ -273,6 +298,7 @@ test("daemon: writes missing status and revalidates tombstone deletion after sto
   const configPath = join(stashPath, "config.json");
   const liveDir = join(workspace, "live-dir");
   const missingDir = join(workspace, "missing-dir");
+  let daemon: BackgroundDaemon | null = null;
   const started: string[] = [];
   const stopStarted: string[] = [];
   let releaseStop: (() => void) | null = null;
@@ -294,7 +320,7 @@ test("daemon: writes missing status and revalidates tombstone deletion after sto
       connections: [{ provider: "github", config: { id: "user/live" } }],
     });
 
-    const daemon = new BackgroundDaemon({
+    daemon = new BackgroundDaemon({
       configPath,
       pollMs: 20,
       subscribe: async () => ({
@@ -348,9 +374,9 @@ test("daemon: writes missing status and revalidates tombstone deletion after sto
     assert.equal(existsSync(join(stashPath, "live-stash")), true);
     assert.deepEqual(started, ["live-stash", "live-stash"]);
 
-    await daemon.stop();
   } finally {
     releaseStop?.();
+    await daemon?.stop();
     await rm(workspace, { recursive: true, force: true });
   }
 });
