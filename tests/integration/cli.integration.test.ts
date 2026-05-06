@@ -223,3 +223,17 @@ test("cli connect blocks git repos unless --dangerously-allow-git is passed", as
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("cli output ends with a trailing blank line so the shell prompt has breathing room", async () => {
+  const dir = await makeTempDir("cli-trailing-blank");
+
+  try {
+    const connect = await runCli(dir, ["connect", "github:user/repo", "--token", "test-token"]);
+    assert.equal(connect.stdout.endsWith("\n\n"), true, "connect stdout should end with a blank line");
+
+    const status = await runCli(dir, ["status"]);
+    assert.equal(status.stdout.endsWith("\n\n"), true, "status stdout should end with a blank line");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

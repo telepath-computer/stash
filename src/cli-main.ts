@@ -307,23 +307,23 @@ function formatConfigured(providerName: string, colors: Colors): string {
 }
 
 function formatAlreadyConnected(uri: string, colors: Colors): string {
-  return `${colors.green("Already connected")} ${colors.gray("—")} ${colors.cyan(uri)}`;
+  return `${colors.green("Already connected")} — ${uri}`;
 }
 
 function formatConnected(uri: string, path: string, colors: Colors): string {
-  return `${colors.green("Connected")} ${colors.cyan(uri)} ${colors.gray("to")} ${path}`;
+  return `${colors.green("Connected")} ${uri} to ${path}`;
 }
 
 function formatDisconnected(uri: string, path: string, colors: Colors): string {
-  return `${colors.green("Disconnected")} ${colors.cyan(uri)} ${colors.gray("from")} ${path}`;
+  return `${colors.green("Disconnected")} ${uri} from ${path}`;
 }
 
 function formatRelinked(oldPath: string, newPath: string, colors: Colors): string {
-  return `${colors.green("Relinked")} ${oldPath} ${colors.gray("→")} ${newPath}`;
+  return `${colors.green("Relinked")} ${oldPath} → ${newPath}`;
 }
 
 function formatAlreadyLinked(path: string, colors: Colors): string {
-  return `${colors.green("Already linked")} ${colors.gray("—")} ${path}`;
+  return `${colors.green("Already linked")} — ${path}`;
 }
 
 function formatConnectHint(colors: Colors): string {
@@ -512,7 +512,9 @@ function renderStatusTable(
   }
 
   if (status?.error) {
-    table.push([colors.gray("Last error"), colors.red(status.error)]);
+    table.push([colors.gray("Message"), colors.red(status.error)]);
+  } else if (status?.summary) {
+    table.push([colors.gray("Message"), status.summary]);
   }
 
   return table.toString();
@@ -850,9 +852,11 @@ export async function main(argv = process.argv, deps: CliDependencies = {}): Pro
   async function runCommand(action: () => Promise<void>): Promise<void> {
     try {
       await action();
+      writeBlankLine(stdout);
     } catch (error) {
       exitCode = 1;
       renderCliError(stderr, toCliCommandError(error), colors);
+      writeBlankLine(stderr);
     }
   }
 

@@ -10,21 +10,24 @@ These rules apply across every command. Color is applied via `picocolors` and on
 
 ### Palette
 
+Color is used sparingly. The aim is *one* accented token per line at most — usually a verb at the start, or a state value in the daemon line / status table. Connector words and URIs in plain confirmation lines stay default; URIs are only colored inside the `status` table (where the column structure makes the accent earn its place) or inside error messages (where it draws the eye to the offending value).
+
 | Role     | Color   | Used for                                                         |
 |----------|---------|------------------------------------------------------------------|
-| default  | (none)  | the main content of any line — usually a path                    |
-| accent   | cyan    | provider URIs (`github:owner/repo`)                              |
-| success  | green   | confirmation verbs (`Connected`, `Disconnected`, `Configured`, `Relinked`, `Already connected`); daemon `running` |
-| warn     | yellow  | daemon `stopped`; `(path missing)` warnings; `unsupported` state |
-| error    | red     | `Error:` prefix on stderr; daemon `error` state; `Last error` values |
-| muted    | grey    | labels, connectors, hints, time qualifiers — see below           |
+| default  | (none)  | most content — paths, URIs in confirmation lines, connectors     |
+| accent   | cyan    | URIs inside the `status` table; URIs inside error messages       |
+| success  | green   | confirmation verbs (`Connected`, `Disconnected`, `Configured`, `Relinked`, `Already connected`, `Already linked`); daemon `running` |
+| warn     | yellow  | daemon `stopped`; `(path missing)` marker; `unsupported` state   |
+| error    | red     | `Error:` prefix on stderr; daemon `error` state; `State` value when it's `error`; `Message` value when sourced from an error |
+| muted    | grey    | hint suffixes, table row labels, time qualifiers — see below     |
 
 ### What gets greyed
 
-- **Table row labels** in `status` (`Connection`, `State`, `Last sync`, `Pending`, `Last error`) — let the values carry the weight.
-- **Connector words** in confirmation lines — `to`, `from`, `→` separators between path and URI.
-- **Time qualifiers** — `2m ago`, `14s ago`.
-- **Hint suffixes** — the second line on `connect` (`Background sync is on. Run \`stash status\` to check.`) is muted; same for the `Run: stash relink …` line under a path-missing stash.
+- **Table row labels** in `status` (`Connection`, `State`, `Last sync`, `Pending`, `Message`) — let the values carry the weight.
+- **Time qualifiers** in the `Last sync` row — `2m ago`, `14s ago`.
+- **Hint suffixes** — the second line on `connect` (`Background sync is on. Run \`stash status\` to check.`) is fully muted; same for the `Run: stash relink …` line under a path-missing stash.
+
+Connector words (`to`, `from`, `—`, `→`) in confirmation lines are **default**, not grey — they stay readable next to the verb.
 
 ### Paths
 
@@ -43,10 +46,10 @@ Paths in output are **tilde-shortened** (`/Users/rupert/Notes` → `~/Notes`). S
 
 ### Spacing
 
-- **Single-line confirmations stay tight** — no blank lines around them.
+- **Every command's output ends with a blank line** so the shell prompt has breathing room. Tested in the integration suite.
 - **Two-line `connect` output** (success + daemon hint) has no blank line between the two lines; the hint is rendered directly under the confirmation in muted grey.
 - **`status`** uses a blank line between the daemon header, each per-stash block, and the count outro.
-- **Errors** are tight: summary line on stderr, any detail lines immediately under it, no trailing blank line.
+- **Errors** are tight: summary line on stderr, any detail lines immediately under it; the trailing blank line is on **stderr**, not stdout.
 
 ## Commands
 
@@ -95,7 +98,7 @@ Connected github:owner/repo to ~/Notes
 Background sync is on. Run `stash status` to check.
 ```
 
-Color: `Connected` green; `github:owner/repo` cyan; `to` muted grey; `~/Notes` default; the second line entirely muted grey.
+Color: `Connected` green; everything else default; the second line entirely muted grey.
 
 The second line appears only when the daemon is running. If the daemon isn't running (or the platform doesn't support it), only the first line prints.
 
@@ -105,7 +108,7 @@ Output (idempotent re-run on the same URI):
 Already connected — github:owner/repo
 ```
 
-Color: `Already connected` green; `—` muted grey; URI cyan.
+Color: `Already connected` green; everything else default.
 
 Output (`.git/` detected without `--dangerously-allow-git`), to **stderr**, exit 1:
 
@@ -144,7 +147,7 @@ Output:
 Disconnected github:owner/notes from ~/Notes
 ```
 
-Color: `Disconnected` green; URI cyan; `from` muted grey; path default.
+Color: `Disconnected` green; everything else default.
 
 Output (no stash at path), to **stderr**, exit 1:
 
@@ -179,7 +182,7 @@ Output:
 Relinked ~/OldFolder → ~/Documents/NewFolder
 ```
 
-Color: `Relinked` green; `→` muted grey; both paths default.
+Color: `Relinked` green; everything else default.
 
 Output (no stash at old path), to **stderr**, exit 1:
 
@@ -220,9 +223,9 @@ Daemon: running
 2 stashes
 ```
 
-The per-stash table is rendered with `cli-table3`. Rows that are absent (no error, no pending changes) are omitted from the table — `Last error` only appears when an error is present.
+The per-stash table is rendered with `cli-table3`. Rows that are absent (no message, no pending changes) are omitted from the table. The `Message` row carries either the latest sync `summary` (e.g. `synced 3 modified`) or an `error` string — error wins when both are present.
 
-Color in the table: row labels (left column) muted grey, values default — except the URI in the `Connection` row which is cyan, and `Last error` value which is red.
+Color in the table: row labels (left column) muted grey, values default — except the URI in the `Connection` row which is cyan, the `State` value when it's `error` which is red, and the `Message` value which is red when sourced from `error` (default fg when sourced from `summary`).
 
 If a stash's path no longer exists, the table is replaced with a one-line warning:
 

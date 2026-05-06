@@ -403,8 +403,8 @@ test("status renders the error state row and last error details for errored stas
 
     const stdout = stripAnsi(result.stdout);
     assert.equal(result.exitCode, 0);
-    assert.match(stdout, /State[\s\S]*error[\s\S]*Last error/);
-    assert.equal(stdout.includes("Last error"), true);
+    assert.match(stdout, /State[\s\S]*error[\s\S]*Message/);
+    assert.equal(stdout.includes("Message"), true);
     assert.equal(stdout.includes("rate limit resets in 43s"), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
