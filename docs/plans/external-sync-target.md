@@ -430,6 +430,6 @@ URIs are reconstructed for display via `${provider}:${config.id}`.
 
 These don't constrain this spec but should not be made harder by it:
 
-- **JSON syncing.** First-class support for syncing JSON documents.
+- **Structured data syncing.** First-class support for syncing structured documents (JSON, YAML, TOML, etc.) with field-level merge semantics rather than whole-file last-writer-wins.
 - **Direct p2p syncing.** A future `iroh:` (or similar) provider, transport-only — stash core continues to handle reconciliation. Reads `stash share <path>` (or similar) output, pastes into another client. The URI-as-canonical-form decision and the `Stash.create`/`Stash.load` shape are designed to make this drop in cleanly. Likely also: an event-driven hook so the provider can wake the watch loop ("peers updated, fetch now") instead of polling, and a machine-level `~/.stash/identity.json` for the iroh NodeId.
 - **Multi-connection.** Reuse the existing array shape on `stash.json`. Drop the "single-connection" check in `connect`.
