@@ -128,8 +128,8 @@ Prevents the daemon from observing partial JSON during a CLI write.
 ### CLI
 
 ```bash
-stash connect [<path>] <uri> [--dangerously-allow-git]
-stash disconnect [<path>] [<uri>]
+stash connect <path> <uri> [--dangerously-allow-git]
+stash disconnect <path> [<uri>]
 stash relink <old-path> <new-path> [--dangerously-allow-git]
 stash status
 stash start / stop
@@ -140,11 +140,11 @@ Removed from prior versions: `stash sync`, `stash watch`, `stash add`, `stash jo
 
 ### Per-command behavior
 
-#### `stash connect [<path>] <uri> [--dangerously-allow-git]`
+#### `stash connect <path> <uri> [--dangerously-allow-git]`
 
-- **Inputs.** Optional `<path>` (defaults to cwd). Required `<uri>` in the form `<scheme>:<opaque>`. Optional `--dangerously-allow-git` flag (gates a safety check, not stored).
+- **Inputs.** Required `<path>` (use `.` for cwd). Required `<uri>` in the form `<scheme>:<opaque>`. Optional `--dangerously-allow-git` flag (gates a safety check, not stored).
 - **Behavior.**
-  1. Resolve `<path>` to canonical absolute via `realpath`. Error if it doesn't exist.
+  1. `mkdir -p <path>` (no-op if it already exists), then resolve to canonical absolute via `realpath`.
   2. Detect `.git/`. If present and `--dangerously-allow-git` not passed → error: *"git repository detected. Pass `--dangerously-allow-git` if you really want stash to sync this folder."*
      - The flag is **not stored**. The check exists only at `connect` and `relink`. The runtime `.git/` check inside `Stash.sync()` (today at `stash.ts:162`) is **removed** — the connect/relink-time decision is final. Trade-off: if a user runs `git init` inside an already-synced folder, sync continues silently (no post-connect protection). Accepted; user explicitly opted in at registration.
   3. Parse URI: split on first `:` → `{ provider, config: { id } }`. Error if no colon.
@@ -171,9 +171,9 @@ Removed from prior versions: `stash sync`, `stash watch`, `stash add`, `stash jo
   Multi-connection per stash is not yet supported. Run `stash disconnect /Users/rupert/Notes` first.
   ```
 
-#### `stash disconnect [<path>] [<uri>]`
+#### `stash disconnect <path> [<uri>]`
 
-- **Inputs.** Optional `<path>` (defaults to cwd). Optional `<uri>` of the connection to drop.
+- **Inputs.** Required `<path>` (use `.` for cwd). Optional `<uri>` of the connection to drop.
 - **Behavior.** Inside `withRegistryLock`:
   1. Resolve input: try `realpath(input)` first; on ENOENT, fall back to `path.resolve(input)`.
   2. Scan `~/.stash/*/stash.json` and find the entry whose `path` matches. Error if none.

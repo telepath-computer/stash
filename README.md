@@ -20,9 +20,17 @@ npm install -g @telepath-computer/stash
 [Create a new repo on GitHub](https://github.com/new) to use for sync, then connect it:
 
 ```bash
-cd dir-to-sync/
-stash connect github
+stash connect ./dir-to-sync github:owner/repo
 ```
+
+Or, from inside the folder:
+
+```bash
+cd dir-to-sync/
+stash connect . github:owner/repo
+```
+
+If the path doesn't exist yet, `stash connect` creates it.
 
 Follow the prompts to enter your repo & GitHub token (see below).
 
@@ -47,7 +55,7 @@ Alternatively, a classic token with the `repo` scope also works.
 
 ## How it works
 
-A stash is a folder with a `.stash/` directory that stores connection config and a snapshot of the last-synced file state. On each sync, Stash scans local files, fetches remote changes, and reconciles both sides using a version of Google's [diff-match-patch](https://github.com/google/diff-match-patch) algorithm (the same one used by Obsidian Sync). In watch or background mode, this runs whenever a file changes or every 30 seconds.
+A stash is a folder registered in `~/.stash/<id>/`, which stores its connection config and a snapshot of the last-synced file state. On each sync, Stash scans local files, fetches remote changes, and reconciles both sides using a version of Google's [diff-match-patch](https://github.com/google/diff-match-patch) algorithm (the same one used by Obsidian Sync). In background mode, this runs whenever a file changes or every 30 seconds.
 
 1. Scan local files against the stored snapshot
 2. Fetch remote changes from the provider
@@ -57,25 +65,20 @@ A stash is a folder with a `.stash/` directory that stores connection config and
 
 - **Smart text merging.** Edits to different regions combine cleanly. Overlapping edits preserve both sides instead of silently dropping content.
 - **Binary files** use last-modified-wins.
-- **Automatic tracking.** Every file in the directory is synced except dotfiles, dot-directories, symlinks, and `.stash/` metadata.
+- **Automatic tracking.** Every file in the directory is synced except dotfiles, dot-directories, and symlinks.
 - **Provider-agnostic.** GitHub is the built-in provider, but the transport layer is pluggable. See [docs/providers/overview.md](docs/providers/overview.md).
 
 ## Commands
 
 | Command                           | Description                                                                |
 | --------------------------------- | -------------------------------------------------------------------------- |
-| `stash connect <provider> [name]` | Initialize a stash and add a named connection                              |
-| `stash disconnect <name>`         | Disconnect one named connection                                            |
-| `stash disconnect --all`          | Disconnect the current stash completely                                    |
-| `stash disconnect --path <path>`  | Disconnect a stash by path                                                 |
-| `stash sync`                      | Sync once                                                                  |
-| `stash watch`                     | Watch and sync continuously in the foreground                              |
-| `stash start`                     | Start background sync (resumes on restart)                                 |
-| `stash stop`                      | Stop and uninstall the background service                                  |
-| `stash status`                    | Show background sync state and every registered stash (from any directory) |
-| `stash setup <provider>`          | Update provider credentials                                                |
-| `stash config set <key> <value>`  | Set a per-stash config value                                               |
-| `stash config get <key>`          | Get a per-stash config value                                               |
+| `stash setup <provider>`          | Configure provider credentials                                             |
+| `stash connect <path> <uri>`      | Connect a folder to a provider URI (creates the folder if missing)         |
+| `stash disconnect <path> [<uri>]` | Disconnect a folder from a provider URI                                    |
+| `stash relink <old> <new>`        | Move a stash to a new path (after renaming or moving the folder)           |
+| `stash status`                    | Show background sync state and every registered stash                      |
+| `stash start`                     | Install and start the background sync service                              |
+| `stash stop`                      | Stop and uninstall the background sync service                             |
 
 ## Using stash with git
 
@@ -84,15 +87,15 @@ A stash is a folder with a `.stash/` directory that stores connection config and
 
 We recommend you avoid using `.git/` and Stash simultaneously. Stash is its own syncing service, and simply uses GitHub as a remote to store files.
 
-*However*, you might really like git workflows, possess an insatiable rebellious streak, and still want to sync a stash with this tool and use git at the same time. If this is you, we recommend you **only use git locally**, and while **disable backgroud sync** (`stash stop`). Then you can create branches, use git, and only run `stash sync` manually when you have your changes safely merged back into main.
+*However*, you might really like git workflows, possess an insatiable rebellious streak, and still want to sync a stash with this tool and use git at the same time. If this is you, we recommend you **only use git locally**, and **disable background sync** (`stash stop`) while you switch branches.
 
-Disable `.git/` protections by editing the config while in your stash folder:
+Bypass the `.git/` check by passing `--dangerously-allow-git` at connect time:
 
 ```bash
-stash config set allow-git true
+stash connect ./my-repo github:owner/repo --dangerously-allow-git
 ```
 
-Oh, and probably make a backup first. We'll be improving git compatability in future, so expect this restriction to be improved.
+Oh, and probably make a backup first. We'll be improving git compatibility in future, so expect this restriction to be relaxed.
 
 ## FAQ
 

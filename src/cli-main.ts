@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { access, constants, readdir, realpath, readFile } from "node:fs/promises";
+import { access, constants, mkdir, readdir, realpath, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { delimiter, join, resolve } from "node:path";
 import type { Readable } from "node:stream";
@@ -536,37 +536,17 @@ async function runSetup(
   writeLine(stdout, formatConfigured(providerName, colors));
 }
 
-function normalizeConnectArgs(first: string, second?: string): { pathArg?: string; uri: string } {
-  if (second) {
-    return { pathArg: first, uri: second };
-  }
-  return { uri: first };
-}
-
-function normalizeDisconnectArgs(
-  first?: string,
-  second?: string,
-): { pathArg?: string; uri?: string } {
-  if (first && second) {
-    return { pathArg: first, uri: second };
-  }
-  if (first?.includes(":")) {
-    return { uri: first };
-  }
-  return { pathArg: first };
-}
-
 async function runConnect(
-  first: string,
-  second: string | undefined,
+  pathArg: string,
+  uri: string,
   valuesFromCli: Record<string, string | boolean | undefined>,
   deps: ConnectDeps,
   io: PromptIo,
   stdout: NodeJS.WritableStream,
   colors: Colors,
 ): Promise<void> {
-  const { pathArg, uri } = normalizeConnectArgs(first, second);
-  const targetPath = pathArg ?? deps.cwd();
+  const targetPath = resolve(deps.cwd(), pathArg);
+  await mkdir(targetPath, { recursive: true });
   const canonicalPath = await canonicalizeExistingPath(targetPath);
   ensureGitAllowed(canonicalPath, valuesFromCli.dangerouslyAllowGit === true);
 
@@ -657,14 +637,13 @@ async function runConnect(
 }
 
 async function runDisconnect(
-  first: string | undefined,
-  second: string | undefined,
+  pathArg: string,
+  uri: string | undefined,
   deps: DisconnectDeps,
   stdout: NodeJS.WritableStream,
   colors: Colors,
 ): Promise<void> {
-  const { pathArg, uri } = normalizeDisconnectArgs(first, second);
-  const lookupPath = await resolveLookupPath(pathArg ?? deps.cwd());
+  const lookupPath = await resolveLookupPath(resolve(deps.cwd(), pathArg));
   const stashPath = deps.stashPath ?? getStashPath();
 
   let disconnectedPath = lookupPath;
@@ -775,7 +754,7 @@ async function runStatus(
     .sort((a, b) => a.record.path.localeCompare(b.record.path));
 
   if (entries.length === 0) {
-    writeLine(stdout, "No stashes registered. Run `stash connect <path> <uri>` to add one.");
+    writeLine(stdout, "No stashes registered. Run `stash connect <path> <uri>` to add one (e.g. `stash connect . github:owner/repo`).");
     return;
   }
 
@@ -894,22 +873,23 @@ export async function main(argv = process.argv, deps: CliDependencies = {}): Pro
 
   const connectCommand = program
     .command("connect")
-    .description("Connect a folder to a provider URI (defaults to current directory)")
-    .argument("<uri-or-path>", "Provider URI (e.g. github:owner/repo) — or a path when followed by a URI")
-    .argument("[uri]", "Provider URI when the first argument is a path")
+    .description("Connect a folder to a provider URI")
+    .argument("<path>", "Folder to connect (created if it does not exist)")
+    .argument("<uri>", "Provider URI (e.g. github:owner/repo)")
     .allowUnknownOption(true)
     .option("--dangerously-allow-git", "Allow syncing a git repository")
     .addHelpText(
       "after",
       "\nExamples:\n" +
-        "  $ stash connect github:owner/repo                # current directory\n" +
-        "  $ stash connect ~/Notes github:owner/notes       # explicit path\n",
+        "  $ stash connect . github:owner/repo               # current directory\n" +
+        "  $ stash connect ~/Notes github:owner/notes        # existing folder\n" +
+        "  $ stash connect ./inbox github:owner/inbox        # creates ./inbox if missing\n",
     )
-    .action(async (first: string, second: string | undefined, _opts: unknown, command: Command) => {
+    .action(async (pathArg: string, uri: string, _opts: unknown, command: Command) => {
       await runCommand(async () => {
         await runConnect(
-          first,
-          second,
+          pathArg,
+          uri,
           command.opts() as Record<string, string | boolean | undefined>,
           {
             cwd,
@@ -927,19 +907,19 @@ export async function main(argv = process.argv, deps: CliDependencies = {}): Pro
 
   program
     .command("disconnect")
-    .description("Disconnect a stash (defaults to current directory)")
-    .argument("[path-or-uri]", "Stash path or connection URI to drop")
-    .argument("[uri]", "Connection URI when the first argument is a path")
+    .description("Disconnect a stash")
+    .argument("<path>", "Folder to disconnect")
+    .argument("[uri]", "Connection URI to drop (required when the stash has multiple connections)")
     .addHelpText(
       "after",
       "\nExamples:\n" +
-        "  $ stash disconnect                              # current directory, only connection\n" +
-        "  $ stash disconnect ~/Notes                       # explicit path, only connection\n" +
-        "  $ stash disconnect ~/Notes github:owner/notes    # explicit path + URI\n",
+        "  $ stash disconnect .                             # current directory\n" +
+        "  $ stash disconnect ~/Notes                       # only connection\n" +
+        "  $ stash disconnect ~/Notes github:owner/notes    # explicit URI\n",
     )
-    .action(async (first: string | undefined, second: string | undefined) => {
+    .action(async (pathArg: string, uri: string | undefined) => {
       await runCommand(async () => {
-        await runDisconnect(first, second, { cwd, stashPath }, stdout, colors);
+        await runDisconnect(pathArg, uri, { cwd, stashPath }, stdout, colors);
       });
     });
 

@@ -76,9 +76,9 @@ Configured github
 
 Color: `Configured` green; provider name default.
 
-### `stash connect [<path>] <uri> [--dangerously-allow-git]`
+### `stash connect <path> <uri> [--dangerously-allow-git]`
 
-Connects a folder to a provider URI. If `<path>` is omitted, defaults to the current directory.
+Connects a folder to a provider URI. `<path>` is required — pass `.` for the current directory. If `<path>` does not exist, it is created (recursively).
 
 The URI form is `<provider>:<id>`, e.g. `github:owner/repo`. The CLI parses the provider, validates the connection, and registers the stash under `~/.stash/<id>/`.
 
@@ -87,8 +87,9 @@ If the provider's global fields are not yet set (e.g. github token), `connect` p
 Examples:
 
 ```bash
-stash connect github:owner/repo                  # current directory
-stash connect ~/Notes github:owner/notes          # explicit path
+stash connect . github:owner/repo                # current directory
+stash connect ~/Notes github:owner/notes         # existing folder
+stash connect ./inbox github:owner/inbox         # creates ./inbox if missing
 ```
 
 Output (new connection):
@@ -124,9 +125,9 @@ Error: ~/Notes is already connected to github:owner/old-repo.
 Multi-connection per stash is not yet supported. Run `stash disconnect ~/Notes` first.
 ```
 
-### `stash disconnect [<path>] [<uri>]`
+### `stash disconnect <path> [<uri>]`
 
-Disconnects a stash from a provider URI. If `<path>` is omitted, defaults to the current directory. If `<uri>` is omitted and the stash has exactly one connection, drops that connection.
+Disconnects a stash from a provider URI. `<path>` is required — pass `.` for the current directory. If `<uri>` is omitted and the stash has exactly one connection, drops that connection.
 
 If the stash has multiple connections (a future feature), `<uri>` is required.
 
@@ -135,10 +136,9 @@ The CLI atomically rewrites `~/.stash/<id>/stash.json` to drop the connection. T
 Examples:
 
 ```bash
-stash disconnect                                  # current directory, only connection
-stash disconnect ~/Notes                          # explicit path, only connection
-stash disconnect ~/Notes github:owner/notes       # explicit path + URI
-stash disconnect github:owner/notes               # URI only (looks up cwd)
+stash disconnect .                               # current directory
+stash disconnect ~/Notes                         # only connection
+stash disconnect ~/Notes github:owner/notes      # explicit URI
 ```
 
 Output:
@@ -241,7 +241,7 @@ Output (no stashes registered):
 ```text
 Daemon: running
 
-No stashes registered. Run `stash connect <path> <uri>` to add one.
+No stashes registered. Run `stash connect <path> <uri>` to add one (e.g. `stash connect . github:owner/repo`).
 ```
 
 The `Daemon:` line is colored — `running` green, `stopped` yellow, `unsupported` yellow, `error` red — when stdout is a TTY.

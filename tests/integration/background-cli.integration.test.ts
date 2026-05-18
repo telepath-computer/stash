@@ -130,7 +130,7 @@ test("connect creates a new stash record and stores provider globals separately"
   try {
     const result = await runMain(
       dir,
-      ["connect", "github:user/repo", "--token", "test-token"],
+      ["connect", ".", "github:user/repo", "--token", "test-token"],
       {
         serviceStatus: { installed: true, running: true },
       },
@@ -159,8 +159,8 @@ test("connect is idempotent for the same uri", async () => {
   const dir = await makeTempDir("stash-cli-connect-idempotent");
 
   try {
-    const first = await runMain(dir, ["connect", "github:user/repo", "--token", "test-token"]);
-    const second = await runMain(dir, ["connect", "github:user/repo"], {
+    const first = await runMain(dir, ["connect", ".", "github:user/repo", "--token", "test-token"]);
+    const second = await runMain(dir, ["connect", ".", "github:user/repo"], {
       config: first.config,
     });
 
@@ -180,7 +180,7 @@ test("connect skips rewriting global config when provider globals are unchanged"
   const dir = await makeTempDir("stash-cli-connect-global-unchanged");
 
   try {
-    const result = await runMain(dir, ["connect", "github:user/repo"], {
+    const result = await runMain(dir, ["connect", ".", "github:user/repo"], {
       config: {
         providers: {
           github: { token: "test-token" },
@@ -207,7 +207,7 @@ test("connect blocks git repositories unless --dangerously-allow-git is passed",
   try {
     await mkdir(join(dir, ".git"), { recursive: true });
 
-    const result = await runMain(dir, ["connect", "github:user/repo", "--token", "test-token"]);
+    const result = await runMain(dir, ["connect", ".", "github:user/repo", "--token", "test-token"]);
 
     const stderr = stripAnsi(result.stderr);
     assert.equal(result.exitCode, 1);
@@ -225,10 +225,10 @@ test("disconnect tombstones the last connection without deleting the stash dir",
   const dir = await makeTempDir("stash-cli-disconnect");
 
   try {
-    const connected = await runMain(dir, ["connect", "github:user/repo", "--token", "test-token"]);
+    const connected = await runMain(dir, ["connect", ".", "github:user/repo", "--token", "test-token"]);
     const { id } = await readOnlyStashRecord(getTestStashPath(dir));
 
-    const result = await runMain(dir, ["disconnect"], {
+    const result = await runMain(dir, ["disconnect", "."], {
       config: connected.config,
     });
 
@@ -252,7 +252,7 @@ test("relink rewrites stash.json.path and enforces the git gate on the new path"
   const moved = await makeTempDir("stash-cli-relink-new");
 
   try {
-    const connected = await runMain(dir, ["connect", "github:user/repo", "--token", "test-token"]);
+    const connected = await runMain(dir, ["connect", ".", "github:user/repo", "--token", "test-token"]);
     const { id } = await readOnlyStashRecord(getTestStashPath(dir));
 
     await mkdir(join(moved, ".git"), { recursive: true });
@@ -365,7 +365,7 @@ test("status shows daemon state and empty hint when no stashes are registered", 
     assert.equal(result.exitCode, 0);
     assert.equal(stdout.includes("Daemon: stopped"), true);
     assert.equal(
-      stdout.includes("No stashes registered. Run `stash connect <path> <uri>` to add one."),
+      stdout.includes("No stashes registered. Run `stash connect <path> <uri>` to add one"),
       true,
     );
   } finally {
@@ -415,7 +415,7 @@ test("error output is plain stderr with an Error prefix", async () => {
   const dir = await makeTempDir("stash-cli-error-shape");
 
   try {
-    const result = await runMain(dir, ["disconnect"]);
+    const result = await runMain(dir, ["disconnect", "."]);
 
     const stderr = stripAnsi(result.stderr);
     assert.equal(result.exitCode, 1);

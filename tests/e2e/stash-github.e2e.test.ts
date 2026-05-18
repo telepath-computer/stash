@@ -1,10 +1,23 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Stash } from "../../src/stash.ts";
+import type { GlobalConfig } from "../../src/types.ts";
+
+async function initStash(dir: string, globalConfig: GlobalConfig): Promise<Stash> {
+  const xdgDir = await mkdtemp(join(tmpdir(), `xdg-${randomUUID().slice(0, 8)}-`));
+  const stashPath = join(xdgDir, "stash");
+  const canonicalPath = await realpath(dir);
+  const created = await Stash.create(
+    { path: canonicalPath, connections: [] },
+    globalConfig,
+    { stashPath },
+  );
+  return Stash.load(created.id, globalConfig, { stashPath });
+}
 
 const token = process.env.GITHUB_TOKEN;
 
@@ -176,7 +189,7 @@ test(
           stashes: [],
         },
       };
-      const stashA = await Stash.init(machineA, globalConfig);
+      const stashA = await initStash(machineA, globalConfig);
       await stashA.connect({ name: "github", provider: "github", repo: repo.fullName });
       await syncWithRetry(stashA);
 
@@ -184,7 +197,7 @@ test(
       assert.equal(await getRawFile(repo.fullName, "notes.md"), "note");
       assert.ok(await getRawFile(repo.fullName, ".stash/snapshot.json"));
 
-      const stashB = await Stash.init(machineB, globalConfig);
+      const stashB = await initStash(machineB, globalConfig);
       await stashB.connect({ name: "github", provider: "github", repo: repo.fullName });
       await syncWithRetry(stashB);
 
@@ -221,11 +234,11 @@ test(
       };
       await writeFile(join(machineA, "hello.md"), "line1\nline2\nline3", "utf8");
 
-      const stashA = await Stash.init(machineA, globalConfig);
+      const stashA = await initStash(machineA, globalConfig);
       await stashA.connect({ name: "github", provider: "github", repo: repo.fullName });
       await syncWithRetry(stashA);
 
-      const stashB = await Stash.init(machineB, globalConfig);
+      const stashB = await initStash(machineB, globalConfig);
       await stashB.connect({ name: "github", provider: "github", repo: repo.fullName });
       await syncWithRetry(stashB);
 

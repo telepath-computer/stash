@@ -61,7 +61,7 @@ test("cli connect creates registry metadata without a local .stash directory", a
   const dir = await makeTempDir("cli-connect-uri");
 
   try {
-    const result = await runCli(dir, ["connect", "github:user/repo", "--token", "test-token"]);
+    const result = await runCli(dir, ["connect", ".", "github:user/repo", "--token", "test-token"]);
     const canonicalDir = await realpath(dir);
 
     assert.equal(stripAnsi(result.stdout).includes("Connected"), true);
@@ -106,15 +106,67 @@ test("cli connect accepts an explicit path argument", async () => {
   }
 });
 
+test("cli connect creates the target folder when it does not exist", async () => {
+  const dir = await makeTempDir("cli-connect-mkdir");
+  const target = join(dir, "nested", "new-folder");
+
+  try {
+    assert.equal(existsSync(target), false);
+    const result = await runCli(dir, ["connect", target, "github:user/repo", "--token", "test-token"]);
+
+    assert.equal(stripAnsi(result.stdout).includes("Connected"), true);
+    assert.equal(existsSync(target), true);
+    const record = JSON.parse(
+      await readFile(
+        join(getTestStashPath(dir), (await listStashIds(getTestStashPath(dir)))[0], "stash.json"),
+        "utf8",
+      ),
+    ) as { path: string };
+    assert.equal(record.path, await realpath(target));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("cli connect requires a path argument", async () => {
+  const dir = await makeTempDir("cli-connect-no-path");
+
+  try {
+    const error = await runCli(dir, ["connect", "github:user/repo"]).catch(
+      (value) => value as { stdout: string; stderr: string; code: number },
+    );
+    assert.equal(error.code, 1);
+    const stderr = stripAnsi(error.stderr ?? "");
+    assert.equal(stderr.includes("missing required argument"), true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("cli disconnect requires a path argument", async () => {
+  const dir = await makeTempDir("cli-disconnect-no-path");
+
+  try {
+    const error = await runCli(dir, ["disconnect"]).catch(
+      (value) => value as { stdout: string; stderr: string; code: number },
+    );
+    assert.equal(error.code, 1);
+    const stderr = stripAnsi(error.stderr ?? "");
+    assert.equal(stderr.includes("missing required argument"), true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("cli disconnect tombstones the stash record", async () => {
   const dir = await makeTempDir("cli-disconnect");
 
   try {
-    await runCli(dir, ["connect", "github:user/repo", "--token", "test-token"]);
+    await runCli(dir, ["connect", ".", "github:user/repo", "--token", "test-token"]);
     const [id] = await listStashIds(getTestStashPath(dir));
     const canonicalDir = await realpath(dir);
 
-    const result = await runCli(dir, ["disconnect"]);
+    const result = await runCli(dir, ["disconnect", "."]);
 
     assert.equal(stripAnsi(result.stdout).includes("Disconnected"), true);
     assert.equal(stripAnsi(result.stdout).includes("github:user/repo"), true);
@@ -133,7 +185,7 @@ test("cli relink rewrites the canonical path stored in stash.json", async () => 
   const moved = await makeTempDir("cli-relink-new");
 
   try {
-    await runCli(dir, ["connect", "github:user/repo", "--token", "test-token"]);
+    await runCli(dir, ["connect", ".", "github:user/repo", "--token", "test-token"]);
     const [id] = await listStashIds(getTestStashPath(dir));
     const canonicalDir = await realpath(dir);
     const canonicalMoved = await realpath(moved);
@@ -159,7 +211,7 @@ test("cli status prints registered stashes from the registry root", async () => 
   const stashPath = getTestStashPath(dir);
 
   try {
-    await runCli(dir, ["connect", "github:user/repo", "--token", "test-token"]);
+    await runCli(dir, ["connect", ".", "github:user/repo", "--token", "test-token"]);
     const [id] = await listStashIds(stashPath);
     await writeFile(
       join(stashPath, id, "status.json"),
@@ -196,7 +248,7 @@ test("cli connect blocks git repos unless --dangerously-allow-git is passed", as
 
     const error = await execFileAsync(
       "node",
-      [CLI_PATH, "connect", "github:user/repo", "--token", "test-token"],
+      [CLI_PATH, "connect", ".", "github:user/repo", "--token", "test-token"],
       {
         cwd: dir,
         env: { ...process.env, XDG_CONFIG_HOME: join(dir, ".xdg") },
@@ -211,6 +263,7 @@ test("cli connect blocks git repos unless --dangerously-allow-git is passed", as
 
     const allowed = await runCli(dir, [
       "connect",
+      ".",
       "github:user/repo",
       "--token",
       "test-token",
@@ -228,7 +281,7 @@ test("cli output ends with a trailing blank line so the shell prompt has breathi
   const dir = await makeTempDir("cli-trailing-blank");
 
   try {
-    const connect = await runCli(dir, ["connect", "github:user/repo", "--token", "test-token"]);
+    const connect = await runCli(dir, ["connect", ".", "github:user/repo", "--token", "test-token"]);
     assert.equal(connect.stdout.endsWith("\n\n"), true, "connect stdout should end with a blank line");
 
     const status = await runCli(dir, ["status"]);
