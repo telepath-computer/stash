@@ -1,35 +1,34 @@
 import { existsSync } from "node:fs";
-import { access, constants, readFile, rm } from "node:fs/promises";
+import { access, constants, mkdir, readdir, realpath, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { basename, delimiter, join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
+import type { Readable } from "node:stream";
+import { input as promptInput, password as promptPasswordInput } from "@inquirer/prompts";
+import Table from "cli-table3";
 import { Daemon, UnsupportedPlatformError } from "@rupertsworld/daemon";
 import { Command, Option } from "commander";
-import { input, password } from "@inquirer/prompts";
+import picocolors from "picocolors";
 import {
-  addBackgroundStash,
-  getBackgroundStashes,
   getProviderConfig,
+  getStashDirPath,
+  getStashPath,
   readGlobalConfig,
-  removeBackgroundStash,
   setProviderConfig,
   writeGlobalConfig,
 } from "./global-config.ts";
-import type { LocalConfig } from "./local-config.ts";
-import { readLocalConfig, writeLocalConfig } from "./local-config.ts";
 import { runDaemon } from "./daemon.ts";
-import { needsMigration } from "./migrations.ts";
+import { writeJsonFile } from "./utils/fs.ts";
+import { withRegistryLock } from "./registry-lock.ts";
+import { InvalidUriError } from "./errors.ts";
 import { providers } from "./providers/index.ts";
-import { CliDisplayError } from "./cli-display-error.ts";
 import { Stash } from "./stash.ts";
-import { createColors } from "./ui/color.ts";
 import { formatTimeAgo } from "./ui/format.ts";
-import { LiveLine } from "./ui/live-line.ts";
-import { SyncRenderer } from "./ui/sync-renderer.ts";
-import { watch as watchStash } from "./watch.ts";
-import type { Field, GlobalConfig, ProviderClass, StatusResult } from "./types.ts";
+import { parseUri } from "./uri.ts";
+import type { ConfigItem, GlobalConfig, ProviderClass, StashRecord } from "./types.ts";
 
 const SERVICE_NAME = "stash-background";
 const SERVICE_DESCRIPTION = "Stash background sync";
+const URI_PATTERN = /\b[a-z][a-z0-9-]*:[^\s]+/g;
 
 type ServiceHandle = {
   install(): Promise<void>;
@@ -44,117 +43,309 @@ type ServiceLaunch = {
 
 type CliDependencies = {
   cwd?: () => string;
+  stdin?: Readable;
   readGlobalConfig?: () => Promise<GlobalConfig>;
   writeGlobalConfig?: (config: GlobalConfig) => Promise<void>;
+  stashPath?: string;
   service?: ServiceHandle;
   runDaemon?: () => Promise<void>;
   stdout?: NodeJS.WriteStream;
   stderr?: NodeJS.WriteStream;
 };
 
-type PersistedBackgroundStatus = {
+type PersistedStatus = {
   kind?: string;
   lastSync?: string | null;
   summary?: string | null;
   error?: string | null;
+  currentOperation?: string | null;
+  pendingChanges?: {
+    added?: number;
+    modified?: number;
+    deleted?: number;
+  } | null;
 };
 
-const STASH_CONFIG_KEYS = new Set(["allow-git"]);
+type RegistryEntry = {
+  id: string;
+  record: StashRecord;
+};
 
-function isStashConfigKey(key: string): key is "allow-git" {
-  return STASH_CONFIG_KEYS.has(key);
+type SetupDeps = Required<Pick<CliDependencies, "readGlobalConfig" | "writeGlobalConfig">>;
+
+type ConnectDeps = Required<Pick<CliDependencies, "cwd" | "readGlobalConfig" | "writeGlobalConfig">> &
+  Pick<CliDependencies, "stashPath"> & {
+    getService: () => Promise<ServiceHandle>;
+  };
+
+type DisconnectDeps = Required<Pick<CliDependencies, "cwd">> & Pick<CliDependencies, "stashPath">;
+
+type StatusDeps = Pick<CliDependencies, "stashPath"> & {
+  getService: () => Promise<ServiceHandle>;
+};
+
+type Colors = ReturnType<typeof createColors>;
+
+type PromptIo = {
+  input?: NodeJS.ReadableStream;
+  output?: NodeJS.WritableStream;
+};
+
+export class CliCommandError extends Error {
+  readonly summary: string;
+  readonly details: string[];
+
+  constructor(summary: string, details: string[] = []) {
+    super(summary);
+    this.name = "CliCommandError";
+    this.summary = summary;
+    this.details = details;
+  }
 }
 
-function isStashDirectory(dir: string): boolean {
-  return existsSync(join(dir, ".stash"));
+export function cliError(summary: string, details: string[] = []): CliCommandError {
+  return new CliCommandError(summary, details);
 }
 
-/**
- * Before any connect prompts, reject connection names that conflict with existing
- * `.stash/config.json` state. Keeps expensive/interactive setup from running when
- * the command cannot succeed.
- */
-async function assertNewConnectionAllowedForDirectory(
-  dir: string,
-  resolvedConnectionName: string,
-): Promise<void> {
-  if (!isStashDirectory(dir)) {
-    return;
+export function shortenHomePath(path: string, home = process.env.HOME): string {
+  if (!home) {
+    return path;
   }
-
-  const local = await readLocalConfig(dir);
-  const names = Object.keys(local.connections);
-
-  if (names.includes(resolvedConnectionName)) {
-    throw new CliDisplayError([
-      { kind: "primary", text: `Connection already exists: ${resolvedConnectionName}` },
-    ]);
+  if (path === home) {
+    return "~";
   }
+  return path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+}
 
-  if (names.length > 1) {
-    throw new CliDisplayError([
+export function pluralize(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+export function createColors(isTTY: boolean): ReturnType<typeof picocolors.createColors> {
+  return picocolors.createColors(isTTY);
+}
+
+export function writeLine(stream: NodeJS.WritableStream, text = ""): void {
+  stream.write(`${text}\n`);
+}
+
+function writeBlankLine(stream: NodeJS.WritableStream): void {
+  writeLine(stream);
+}
+
+function isPromptCancelled(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return (
+    error.name === "ExitPromptError" ||
+    error.name === "AbortPromptError" ||
+    /cancelled|canceled|force closed|sigint/i.test(error.message)
+  );
+}
+
+export async function promptText(label: string, io: PromptIo = {}): Promise<string> {
+  try {
+    return await promptInput(
       {
-        kind: "primary",
-        text: "This stash has more than one connection in .stash/config.json (only one is supported).",
+        message: label,
+        validate: (candidate) => {
+          if (!candidate || candidate.trim().length === 0) {
+            return `${label} is required`;
+          }
+          return true;
+        },
       },
-      { kind: "dim", text: "Remove extra entries or run:" },
-      { kind: "dim", text: "  stash disconnect --all" },
-      { kind: "dim", text: "Then connect again." },
-    ]);
+      io,
+    );
+  } catch (error) {
+    if (isPromptCancelled(error)) {
+      throw cliError("Prompt cancelled.");
+    }
+    throw error;
   }
+}
 
-  if (names.length === 1) {
-    const existing = names[0];
-    throw new CliDisplayError([
+export async function promptPassword(label: string, io: PromptIo = {}): Promise<string> {
+  try {
+    return await promptPasswordInput(
       {
-        kind: "primary",
-        text: `This stash already has connection "${existing}" (only one is supported).`,
+        message: label,
+        validate: (candidate) => {
+          if (!candidate || candidate.trim().length === 0) {
+            return `${label} is required`;
+          }
+          return true;
+        },
       },
-      { kind: "dim", text: `Disconnect it before adding "${resolvedConnectionName}":` },
-      { kind: "dim", text: `  stash disconnect ${existing}` },
-    ]);
+      io,
+    );
+  } catch (error) {
+    if (isPromptCancelled(error)) {
+      throw cliError("Prompt cancelled.");
+    }
+    throw error;
+  }
+}
+
+function getGlobalConfigItems(provider: ProviderClass): ConfigItem[] {
+  return provider.configSchema.filter((item) => item.global === true);
+}
+
+function getCliValue(
+  field: ConfigItem,
+  valuesFromCli: Record<string, string | boolean | undefined>,
+): string | undefined {
+  const value = valuesFromCli[field.name];
+  return typeof value === "string" ? value : undefined;
+}
+
+async function promptField(
+  io: PromptIo,
+  field: ConfigItem,
+): Promise<string> {
+  if (field.secret) {
+    return promptPassword(field.label, io);
+  }
+  return promptText(field.label, io);
+}
+
+async function collectFields(
+  io: PromptIo,
+  fields: ConfigItem[],
+  valuesFromCli: Record<string, string | boolean | undefined>,
+  current: Record<string, string> = {},
+): Promise<Record<string, string>> {
+  const values: Record<string, string> = { ...current };
+  for (const field of fields) {
+    if (values[field.name]) {
+      continue;
+    }
+    const cliValue = getCliValue(field, valuesFromCli);
+    if (cliValue) {
+      values[field.name] = cliValue;
+      continue;
+    }
+    values[field.name] = await promptField(io, field);
+  }
+  return values;
+}
+
+function addFieldOptions(command: Command, fields: ConfigItem[]): void {
+  for (const field of fields) {
+    command.addOption(new Option(`--${field.name} <value>`, field.label));
   }
 }
 
 function getProvider(name: string): ProviderClass {
   const provider = providers[name];
   if (!provider) {
-    throw new Error(`Unknown provider: ${name}`);
+    throw cliError(`Unknown provider: ${name}.`);
   }
   return provider;
-}
-
-async function isExecutable(path: string): Promise<boolean> {
-  try {
-    await access(path, constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function writeLine(stream: NodeJS.WriteStream, text: string): void {
-  stream.write(`${text}\n`);
 }
 
 function isUnsupportedPlatformError(error: unknown): boolean {
   return error instanceof UnsupportedPlatformError;
 }
 
-async function bounceDaemonIfMigrationNeeded(
-  dir: string,
-  getService: () => Promise<ServiceHandle>,
-): Promise<boolean> {
-  if (!isStashDirectory(dir) || !(await needsMigration(dir))) {
+function formatUri(connection: StashRecord["connections"][number]): string {
+  return `${connection.provider}:${connection.config.id ?? ""}`;
+}
+
+function sameConnection(
+  left: StashRecord["connections"][number],
+  right: StashRecord["connections"][number],
+): boolean {
+  return left.provider === right.provider && JSON.stringify(left.config) === JSON.stringify(right.config);
+}
+
+function sameStringRecord(left: Record<string, string>, right: Record<string, string>): boolean {
+  const leftKeys = Object.keys(left).sort((a, b) => a.localeCompare(b));
+  const rightKeys = Object.keys(right).sort((a, b) => a.localeCompare(b));
+  if (leftKeys.length !== rightKeys.length) {
     return false;
   }
+  return leftKeys.every((key, index) => key === rightKeys[index] && left[key] === right[key]);
+}
+
+function asSentence(message: string): string {
+  const trimmed = message.trim();
+  if (trimmed.length === 0) {
+    return "Unknown error.";
+  }
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
+function toCliCommandError(error: unknown): CliCommandError {
+  if (error instanceof CliCommandError) {
+    return error;
+  }
+  if (error instanceof Error) {
+    return cliError(asSentence(error.message));
+  }
+  return cliError(asSentence(String(error)));
+}
+
+function colorizeUris(text: string, colors: Colors): string {
+  return text.replace(URI_PATTERN, (uri) => {
+    const punctuation = /[.,!?]$/.test(uri) ? uri.slice(-1) : "";
+    const bareUri = punctuation ? uri.slice(0, -1) : uri;
+    return `${colors.cyan(bareUri)}${punctuation}`;
+  });
+}
+
+function renderCliError(stream: NodeJS.WritableStream, error: CliCommandError, colors: Colors): void {
+  writeLine(stream, `${colors.red("Error:")} ${colorizeUris(error.summary, colors)}`);
+  for (const detail of error.details) {
+    writeLine(stream, colorizeUris(detail, colors));
+  }
+}
+
+function formatConfigured(providerName: string, colors: Colors): string {
+  return `${colors.green("Configured")} ${providerName}`;
+}
+
+function formatAlreadyConnected(uri: string, colors: Colors): string {
+  return `${colors.green("Already connected")} — ${uri}`;
+}
+
+function formatConnected(uri: string, path: string, colors: Colors): string {
+  return `${colors.green("Connected")} ${uri} to ${path}`;
+}
+
+function formatDisconnected(uri: string, path: string, colors: Colors): string {
+  return `${colors.green("Disconnected")} ${uri} from ${path}`;
+}
+
+function formatRelinked(oldPath: string, newPath: string, colors: Colors): string {
+  return `${colors.green("Relinked")} ${oldPath} → ${newPath}`;
+}
+
+function formatAlreadyLinked(path: string, colors: Colors): string {
+  return `${colors.green("Already linked")} — ${path}`;
+}
+
+function formatConnectHint(colors: Colors): string {
+  return colors.gray("Background sync is on. Run `stash status` to check.");
+}
+
+function formatDaemonState(state: "running" | "stopped" | "unsupported" | "error", colors: Colors): string {
+  if (state === "running") {
+    return `Daemon: ${colors.green("running")}`;
+  }
+  if (state === "stopped") {
+    return `Daemon: ${colors.yellow("stopped")}`;
+  }
+  if (state === "unsupported") {
+    return `Daemon: ${colors.yellow("unsupported")}`;
+  }
+  return `Daemon: ${colors.red("error")}`;
+}
+
+async function isExecutable(path: string): Promise<boolean> {
   try {
-    const service = await getService();
-    const status = await service.status();
-    if (!status.running) {
-      return false;
-    }
-    await service.uninstall();
+    await access(path, constants.X_OK);
     return true;
   } catch {
     return false;
@@ -186,500 +377,6 @@ export async function resolveServiceLaunch(argv = process.argv): Promise<Service
   throw new Error("Could not resolve a command to run `stash daemon`");
 }
 
-async function promptField(field: Field): Promise<string> {
-  if (field.secret) {
-    return password({ message: field.label });
-  }
-  return input({ message: field.label });
-}
-
-async function collectFields(
-  fields: Field[],
-  valuesFromCli: Record<string, string | boolean | undefined>,
-  current: Record<string, string> = {},
-): Promise<Record<string, string>> {
-  const values: Record<string, string> = { ...current };
-  for (const field of fields) {
-    if (values[field.name]) {
-      continue;
-    }
-    const cliValue = valuesFromCli[field.name];
-    if (typeof cliValue === "string") {
-      values[field.name] = cliValue;
-      continue;
-    }
-    values[field.name] = await promptField(field);
-  }
-  return values;
-}
-
-async function readBackgroundStatus(dir: string): Promise<PersistedBackgroundStatus | null> {
-  const statusPath = join(dir, ".stash", "status.json");
-  if (!existsSync(statusPath)) {
-    return null;
-  }
-  return JSON.parse(await readFile(statusPath, "utf8")) as PersistedBackgroundStatus;
-}
-
-function renderGitWarning(stdout: NodeJS.WriteStream): void {
-  const { dim, yellow } = createColors(stdout);
-  writeLine(
-    stdout,
-    `${yellow("Warning:")} ${dim("This directory contains .git. Stash will not sync until you either:")}`,
-  );
-  writeLine(stdout, dim("  - remove .git, or"));
-  writeLine(
-    stdout,
-    dim('  - run `stash config set allow-git true` (see "Using stash with git" in the README)'),
-  );
-}
-
-async function warnIfGitSyncBlocked(dir: string, stdout: NodeJS.WriteStream): Promise<void> {
-  if (!existsSync(join(dir, ".git"))) {
-    return;
-  }
-  const localConfig = await readLocalConfig(dir);
-  if (localConfig["allow-git"] === true) {
-    return;
-  }
-  renderGitWarning(stdout);
-}
-
-function parseConfigValue(key: "allow-git", value: string): boolean {
-  if (value === "true") {
-    return true;
-  }
-  if (value === "false") {
-    return false;
-  }
-  throw new Error(`Invalid value for ${key}: expected true or false`);
-}
-async function runSetup(
-  providerName: string,
-  valuesFromCli: Record<string, string | boolean | undefined>,
-  deps: Required<Pick<CliDependencies, "readGlobalConfig" | "writeGlobalConfig">>,
-  stdout: NodeJS.WriteStream,
-): Promise<void> {
-  const provider = getProvider(providerName);
-  let globalConfig = await deps.readGlobalConfig();
-  const values = await collectFields(
-    provider.spec.setup,
-    valuesFromCli,
-    getProviderConfig(globalConfig, providerName),
-  );
-  globalConfig = setProviderConfig(globalConfig, providerName, values);
-  await deps.writeGlobalConfig(globalConfig);
-  writeLine(stdout, `Configured ${providerName}.`);
-}
-
-async function runConnect(
-  providerName: string,
-  connectionName: string | undefined,
-  valuesFromCli: Record<string, string | boolean | undefined>,
-  deps: Required<Pick<CliDependencies, "cwd" | "readGlobalConfig" | "writeGlobalConfig">> & {
-    getService?: () => Promise<ServiceHandle>;
-  },
-  stdout: NodeJS.WriteStream,
-): Promise<void> {
-  const { dim, green } = createColors(stdout);
-  const provider = getProvider(providerName);
-  const resolvedConnectionName = connectionName ?? providerName;
-  const dir = deps.cwd();
-  await assertNewConnectionAllowedForDirectory(dir, resolvedConnectionName);
-
-  let globalConfig = await deps.readGlobalConfig();
-  const setupValues = await collectFields(
-    provider.spec.setup,
-    valuesFromCli,
-    getProviderConfig(globalConfig, providerName),
-  );
-  globalConfig = setProviderConfig(globalConfig, providerName, setupValues);
-  await deps.writeGlobalConfig(globalConfig);
-
-  const stash = await Stash.init(dir, globalConfig);
-  const connectValues = await collectFields(provider.spec.connect, valuesFromCli);
-  await stash.connect({
-    name: resolvedConnectionName,
-    provider: providerName,
-    ...connectValues,
-  });
-  globalConfig = await deps.readGlobalConfig();
-  await deps.writeGlobalConfig(addBackgroundStash(globalConfig, resolve(dir)));
-
-  writeLine(stdout, `Connected ${resolvedConnectionName}.`);
-  await warnIfGitSyncBlocked(dir, stdout);
-
-  if (!deps.getService) {
-    return;
-  }
-
-  try {
-    const status = await (await deps.getService()).status();
-    if (status.running) {
-      writeLine(
-        stdout,
-        `${green("Background sync is on")} ${dim("·")} ${dim("This stash is now syncing automatically")}`,
-      );
-    }
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      error.message === "Could not resolve a command to run `stash daemon`"
-    ) {
-      return;
-    }
-    if (!isUnsupportedPlatformError(error)) {
-      throw error;
-    }
-  }
-}
-
-function formatConnectionLabel(name: string, provider: string): string {
-  return `${name} (${provider})`;
-}
-
-function validateDisconnectSelection(
-  name: string | undefined,
-  all: boolean,
-  targetPath: string | undefined,
-): { name?: string; all: boolean; targetPath?: string } {
-  const selected = [name ? "name" : null, all ? "all" : null, targetPath ? "path" : null].filter(
-    (value): value is string => value !== null,
-  );
-  if (selected.length === 0) {
-    throw new Error(
-      "argument required — run `stash disconnect <name>`, `stash disconnect --all`, or `stash disconnect --path <path>`",
-    );
-  }
-  if (selected.length > 1) {
-    throw new Error(
-      "disconnect modes are mutually exclusive — use only one of `<name>`, `--all`, or `--path <path>`",
-    );
-  }
-  return { name, all, targetPath };
-}
-
-function formatConnectionSummary(status: StatusResult): string {
-  const parts = formatChangeParts(status);
-  if (status.lastSync) {
-    const ago = formatTimeAgo(status.lastSync);
-    return parts.length > 0
-      ? `Local changes: ${parts.join(", ")} · synced ${ago}`
-      : `Up to date · synced ${ago}`;
-  }
-  if (parts.length > 0) {
-    return `Local changes: ${parts.join(", ")} · Never synced`;
-  }
-  return "Waiting for first sync";
-}
-
-async function runDisconnect(
-  name: string | undefined,
-  all: boolean,
-  targetPath: string | undefined,
-  cwd: () => string,
-  readConfig: () => Promise<GlobalConfig>,
-  writeConfig: (config: GlobalConfig) => Promise<void>,
-  stdout: NodeJS.WriteStream,
-): Promise<void> {
-  const selection = validateDisconnectSelection(name, all, targetPath);
-  const globalConfig = await readConfig();
-  if (selection.targetPath) {
-    const resolvedPath = resolve(selection.targetPath);
-    const wasRegistered = getBackgroundStashes(globalConfig).includes(resolvedPath);
-    if (!wasRegistered) {
-      writeLine(stdout, "No stash registered at that path.");
-      return;
-    }
-    await writeConfig(removeBackgroundStash(globalConfig, resolvedPath));
-    if (existsSync(resolvedPath)) {
-      await rm(join(resolvedPath, ".stash"), { recursive: true, force: true });
-    }
-    writeLine(stdout, "Disconnected stash.");
-    return;
-  }
-
-  const dir = cwd();
-  const stash = await Stash.load(dir, globalConfig);
-
-  if (selection.all) {
-    for (const name of Object.keys(stash.connections)) {
-      await stash.disconnect(name);
-    }
-    await writeConfig(removeBackgroundStash(globalConfig, resolve(dir)));
-    await rm(join(dir, ".stash"), { recursive: true, force: true });
-    writeLine(stdout, "Disconnected stash.");
-    return;
-  }
-
-  const connectionName = selection.name!;
-  if (!stash.connections[connectionName]) {
-    throw new Error(`Connection not found: ${connectionName}`);
-  }
-
-  await stash.disconnect(connectionName);
-  if (Object.keys(stash.connections).length === 0) {
-    await writeConfig(removeBackgroundStash(globalConfig, resolve(dir)));
-    await rm(join(dir, ".stash"), { recursive: true, force: true });
-  }
-  writeLine(stdout, `Disconnected ${connectionName}.`);
-}
-
-async function runSync(cwd: () => string, readConfig: () => Promise<GlobalConfig>): Promise<void> {
-  const stash = await Stash.load(cwd(), await readConfig());
-  const line = new LiveLine(process.stdout);
-  const { green, red } = line.colors;
-  const renderer = new SyncRenderer(line);
-  const subscription = stash.on("mutation", (mutation) => {
-    renderer.onMutation(mutation);
-  });
-
-  line.startSpinner("checking...");
-
-  try {
-    await stash.sync();
-    const summary = renderer.done();
-    line.print(summary ? `${green("✓")} synced (${summary})` : `${green("✓")} up to date`);
-  } catch (error) {
-    renderer.error(error as Error);
-    line.print(
-      `${red("✗")} sync failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
-    process.exitCode = 1;
-  } finally {
-    subscription.dispose();
-    renderer.dispose();
-    line.dispose();
-  }
-}
-
-async function runWatch(cwd: () => string, readConfig: () => Promise<GlobalConfig>): Promise<void> {
-  const dir = cwd();
-  const stash = await Stash.load(dir, await readConfig());
-  if (Object.keys(stash.connections).length === 0) {
-    throw new Error("no connection configured — run `stash connect <provider> <name>` first");
-  }
-  await watchStash(stash, { dir, stdin: process.stdin, stdout: process.stdout });
-}
-
-function formatChangeParts(status: {
-  added: string[];
-  modified: string[];
-  deleted: string[];
-}): string[] {
-  const parts: string[] = [];
-  if (status.added.length > 0) parts.push(`${status.added.length} added`);
-  if (status.modified.length > 0) parts.push(`${status.modified.length} modified`);
-  if (status.deleted.length > 0) parts.push(`${status.deleted.length} deleted`);
-  return parts;
-}
-
-function formatStashCount(count: number): string {
-  return `${count} ${count === 1 ? "stash" : "stashes"}`;
-}
-
-async function runStatusAll(
-  readConfig: () => Promise<GlobalConfig>,
-  serviceHandle: ServiceHandle,
-  stdout: NodeJS.WriteStream,
-): Promise<void> {
-  const { dim, green, red } = createColors(stdout);
-  const globalConfig = await readConfig();
-  const stashes = getBackgroundStashes(globalConfig);
-
-  if (stashes.length === 0) {
-    writeLine(
-      stdout,
-      "No stashes connected yet — run `stash connect <provider> <name>` in a directory to get started",
-    );
-    return;
-  }
-
-  try {
-    const current = await serviceHandle.status();
-    if (current.running) {
-      writeLine(
-        stdout,
-        `${green("Background sync is on")} ${dim("·")} ${dim(`watching ${formatStashCount(stashes.length)}`)}`,
-      );
-    } else {
-      writeLine(stdout, red("Background sync is off"));
-      writeLine(
-        stdout,
-        dim(`Run \`stash start\` to resume syncing ${formatStashCount(stashes.length)}`),
-      );
-    }
-  } catch (error) {
-    if (isUnsupportedPlatformError(error)) {
-      writeLine(stdout, red("Background sync is not supported on this platform"));
-    } else {
-      throw error;
-    }
-  }
-
-  writeLine(stdout, "");
-
-  for (const dir of stashes) {
-    const title = basename(dir);
-    if (!existsSync(dir)) {
-      writeLine(stdout, `${red("✗")} ${title}`);
-      writeLine(stdout, dim(`  ${dir}`));
-      writeLine(stdout, dim("  Directory not found"));
-      writeLine(stdout, "");
-      continue;
-    }
-
-    if (!isStashDirectory(dir)) {
-      writeLine(stdout, `${red("✗")} ${title}`);
-      writeLine(stdout, dim(`  ${dir}`));
-      writeLine(stdout, dim("  Not a stash"));
-      writeLine(stdout, "");
-      continue;
-    }
-
-    const stash = await Stash.load(dir, globalConfig);
-    const persistedStatus = await readBackgroundStatus(dir);
-    const localStatus = stash.status();
-    const connectionNames = Object.keys(stash.connections);
-
-    if (persistedStatus?.kind === "error") {
-      writeLine(stdout, `${red("✗")} ${title}`);
-      writeLine(stdout, dim(`  ${dir}`));
-      for (const connectionName of connectionNames) {
-        const connection = stash.connections[connectionName];
-        writeLine(
-          stdout,
-          `  ${formatConnectionLabel(connectionName, connection.provider)} ${dim("·")} ${red(persistedStatus.error ?? "unknown error")}`,
-        );
-      }
-      writeLine(stdout, "");
-      continue;
-    }
-
-    writeLine(stdout, `${green("●")} ${title}`);
-    writeLine(stdout, dim(`  ${dir}`));
-
-    for (const connectionName of connectionNames) {
-      const connection = stash.connections[connectionName];
-      if (persistedStatus === null || localStatus.lastSync === null) {
-        writeLine(
-          stdout,
-          `  ${formatConnectionLabel(connectionName, connection.provider)} ${dim("·")} ${dim("Waiting for first sync")}`,
-        );
-        continue;
-      }
-
-      writeLine(
-        stdout,
-        `  ${formatConnectionLabel(connectionName, connection.provider)} ${dim("·")} ${dim(formatConnectionSummary(localStatus))}`,
-      );
-    }
-    writeLine(stdout, "");
-  }
-}
-
-async function runStart(
-  serviceHandle: ServiceHandle,
-  readConfig: () => Promise<GlobalConfig>,
-  stdout: NodeJS.WriteStream,
-): Promise<void> {
-  const { dim, green, red } = createColors(stdout);
-  try {
-    const current = await serviceHandle.status();
-    if (current.installed && current.running) {
-      writeLine(stdout, green("Background sync is already running"));
-      return;
-    }
-  } catch (error) {
-    if (isUnsupportedPlatformError(error)) {
-      writeLine(stdout, red("Background sync is not supported on this platform"));
-      process.exitCode = 1;
-      return;
-    }
-    throw error;
-  }
-  await serviceHandle.install();
-  const count = getBackgroundStashes(await readConfig()).length;
-  writeLine(stdout, green("Background sync is on"));
-  writeLine(stdout, dim(`Watching ${formatStashCount(count)} · starts on startup`));
-}
-
-async function runStop(
-  serviceHandle: ServiceHandle,
-  readConfig: () => Promise<GlobalConfig>,
-  stdout: NodeJS.WriteStream,
-): Promise<void> {
-  const { dim, red } = createColors(stdout);
-  try {
-    const current = await serviceHandle.status();
-    if (!current.installed && !current.running) {
-      writeLine(stdout, red("Background sync is not running"));
-      return;
-    }
-  } catch (error) {
-    if (isUnsupportedPlatformError(error)) {
-      writeLine(stdout, red("Background sync is not running"));
-      return;
-    }
-    throw error;
-  }
-
-  await serviceHandle.uninstall();
-  const count = getBackgroundStashes(await readConfig()).length;
-  writeLine(stdout, red("Background sync is off"));
-  writeLine(stdout, dim(`Run \`stash start\` to resume syncing ${formatStashCount(count)}`));
-}
-
-async function ensureInitializedStash(
-  cwd: () => string,
-  readConfig: () => Promise<GlobalConfig>,
-): Promise<string> {
-  const dir = cwd();
-  await Stash.load(dir, await readConfig());
-  return dir;
-}
-
-async function runConfigSet(
-  key: string,
-  value: string,
-  cwd: () => string,
-  readConfig: () => Promise<GlobalConfig>,
-  stdout: NodeJS.WriteStream,
-): Promise<void> {
-  if (!isStashConfigKey(key)) {
-    throw new Error(`Unknown config key: ${key}`);
-  }
-  const dir = await ensureInitializedStash(cwd, readConfig);
-  const currentConfig = await readLocalConfig(dir);
-  const nextConfig: LocalConfig = {
-    ...currentConfig,
-    [key]: parseConfigValue(key, value),
-  };
-  await writeLocalConfig(dir, nextConfig);
-  writeLine(stdout, `${key}=${String(nextConfig[key])}`);
-}
-
-async function runConfigGet(
-  key: string,
-  cwd: () => string,
-  readConfig: () => Promise<GlobalConfig>,
-  stdout: NodeJS.WriteStream,
-): Promise<void> {
-  if (!isStashConfigKey(key)) {
-    throw new Error(`Unknown config key: ${key}`);
-  }
-  const dir = await ensureInitializedStash(cwd, readConfig);
-  const localConfig = await readLocalConfig(dir);
-  const value = localConfig[key];
-  writeLine(stdout, value === undefined ? "" : String(value));
-}
-
-function addFieldOptions(command: Command, fields: Field[]): void {
-  for (const field of fields) {
-    command.addOption(new Option(`--${field.name} <value>`, field.label));
-  }
-}
-
 async function createDefaultService(argv = process.argv): Promise<ServiceHandle> {
   const launch = await resolveServiceLaunch(argv);
   return new Daemon({
@@ -691,32 +388,456 @@ async function createDefaultService(argv = process.argv): Promise<ServiceHandle>
   });
 }
 
-export async function main(argv = process.argv, deps: CliDependencies = {}): Promise<void> {
+async function canonicalizeExistingPath(path: string): Promise<string> {
+  return realpath(resolve(path));
+}
+
+async function resolveLookupPath(path: string): Promise<string> {
+  try {
+    return await canonicalizeExistingPath(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return resolve(path);
+    }
+    throw error;
+  }
+}
+
+function ensureGitAllowed(path: string, dangerouslyAllowGit: boolean): void {
+  if (dangerouslyAllowGit) {
+    return;
+  }
+  if (existsSync(join(path, ".git"))) {
+    throw cliError(`${shortenHomePath(path)} is a git repository.`, [
+      "Pass --dangerously-allow-git if you really want stash to sync this folder.",
+    ]);
+  }
+}
+
+async function readRegistry(stashPath: string): Promise<RegistryEntry[]> {
+  if (!existsSync(stashPath)) {
+    return [];
+  }
+  const entries = await readdir(stashPath, { withFileTypes: true });
+  const records: RegistryEntry[] = [];
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) {
+      continue;
+    }
+    const recordPath = join(stashPath, entry.name, "stash.json");
+    try {
+      const record = JSON.parse(await readFile(recordPath, "utf8")) as StashRecord;
+      records.push({ id: entry.name, record });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+  return records;
+}
+
+async function readPersistedStatus(stashPath: string, id: string): Promise<PersistedStatus | null> {
+  try {
+    return JSON.parse(
+      await readFile(join(getStashDirPath(id, stashPath), "status.json"), "utf8"),
+    ) as PersistedStatus;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function describeStatusKind(status: PersistedStatus | null): string {
+  if (status?.currentOperation) {
+    return status.currentOperation;
+  }
+  if (!status?.kind) {
+    return "never";
+  }
+  if (status.kind === "checked" || status.kind === "synced") {
+    return "idle";
+  }
+  return status.kind;
+}
+
+function formatPendingChanges(status: PersistedStatus | null): string | null {
+  const pending = status?.pendingChanges;
+  if (!pending) {
+    return null;
+  }
+  const parts: string[] = [];
+  if ((pending.modified ?? 0) > 0) {
+    parts.push(`${pending.modified} modified`);
+  }
+  if ((pending.added ?? 0) > 0) {
+    parts.push(`${pending.added} added`);
+  }
+  if ((pending.deleted ?? 0) > 0) {
+    parts.push(`${pending.deleted} deleted`);
+  }
+  return parts.length > 0 ? parts.join(", ") : null;
+}
+
+function renderStatusTable(
+  entry: RegistryEntry,
+  status: PersistedStatus | null,
+  colors: Colors,
+): string {
+  const table = new Table({
+    style: {
+      head: [],
+      border: [],
+      compact: true,
+    },
+    wordWrap: true,
+  });
+
+  table.push([
+    colors.gray("Connection"),
+    entry.record.connections.map((connection) => colors.cyan(formatUri(connection))).join("\n"),
+  ]);
+  const statusKind = describeStatusKind(status);
+  table.push([colors.gray("State"), statusKind === "error" ? colors.red(statusKind) : statusKind]);
+
+  if (status?.lastSync) {
+    table.push([colors.gray("Last sync"), colors.gray(formatTimeAgo(new Date(status.lastSync)))]);
+  }
+
+  const pending = formatPendingChanges(status);
+  if (pending) {
+    table.push([colors.gray("Pending"), pending]);
+  }
+
+  if (status?.error) {
+    table.push([colors.gray("Message"), colors.red(status.error)]);
+  } else if (status?.summary) {
+    table.push([colors.gray("Message"), status.summary]);
+  }
+
+  return table.toString();
+}
+
+async function runSetup(
+  providerName: string,
+  valuesFromCli: Record<string, string | boolean | undefined>,
+  deps: SetupDeps,
+  io: PromptIo,
+  stdout: NodeJS.WritableStream,
+  colors: Colors,
+): Promise<void> {
+  const provider = getProvider(providerName);
+  const globalFields = getGlobalConfigItems(provider);
+  const globalConfig = await deps.readGlobalConfig();
+  const values = await collectFields(io, globalFields, valuesFromCli);
+  await deps.writeGlobalConfig(setProviderConfig(globalConfig, providerName, values));
+  writeLine(stdout, formatConfigured(providerName, colors));
+}
+
+async function runConnect(
+  pathArg: string,
+  uri: string,
+  valuesFromCli: Record<string, string | boolean | undefined>,
+  deps: ConnectDeps,
+  io: PromptIo,
+  stdout: NodeJS.WritableStream,
+  colors: Colors,
+): Promise<void> {
+  const targetPath = resolve(deps.cwd(), pathArg);
+  await mkdir(targetPath, { recursive: true });
+  const canonicalPath = await canonicalizeExistingPath(targetPath);
+  ensureGitAllowed(canonicalPath, valuesFromCli.dangerouslyAllowGit === true);
+
+  const parsed = parseUri(uri);
+  const provider = getProvider(parsed.provider);
+  let globalConfig = await deps.readGlobalConfig();
+  const existingGlobalValues = getProviderConfig(globalConfig, parsed.provider);
+  const globalValues = await collectFields(
+    io,
+    getGlobalConfigItems(provider),
+    valuesFromCli,
+    existingGlobalValues,
+  );
+
+  new provider({
+    ...existingGlobalValues,
+    ...globalValues,
+    ...parsed.config,
+  });
+
+  if (!sameStringRecord(globalValues, existingGlobalValues)) {
+    globalConfig = setProviderConfig(globalConfig, parsed.provider, globalValues);
+    await deps.writeGlobalConfig(globalConfig);
+  }
+
+  const stashPath = deps.stashPath ?? getStashPath();
+  const outcome = await withRegistryLock(
+    async () => {
+      const entries = await readRegistry(stashPath);
+      const found = entries.find((entry) => entry.record.path === canonicalPath);
+      const connection = {
+        provider: parsed.provider,
+        config: parsed.config,
+      };
+
+      if (!found) {
+        await Stash.create(
+          {
+            path: canonicalPath,
+            connections: [connection],
+          },
+          globalConfig,
+          { stashPath },
+        );
+        return "connected" as const;
+      }
+
+      if (found.record.connections.length === 0) {
+        await writeJsonFile(join(getStashDirPath(found.id, stashPath), "stash.json"), {
+          ...found.record,
+          connections: [connection],
+        } satisfies StashRecord);
+        return "connected" as const;
+      }
+
+      if (found.record.connections.some((existing) => sameConnection(existing, connection))) {
+        return "already-connected" as const;
+      }
+
+      const displayPath = shortenHomePath(found.record.path);
+      throw cliError(`${displayPath} is already connected to ${formatUri(found.record.connections[0])}.`, [
+        `Multi-connection per stash is not yet supported. Run \`stash disconnect ${displayPath}\` first.`,
+      ]);
+    },
+    { stashPath },
+  );
+
+  if (outcome === "already-connected") {
+    writeLine(stdout, formatAlreadyConnected(uri, colors));
+    return;
+  }
+
+  const displayPath = shortenHomePath(canonicalPath);
+  writeLine(stdout, formatConnected(uri, displayPath, colors));
+
+  let daemonRunning = false;
+  try {
+    daemonRunning = (await (await deps.getService()).status()).running;
+  } catch (error) {
+    if (!isUnsupportedPlatformError(error)) {
+      throw error;
+    }
+  }
+
+  if (daemonRunning) {
+    writeLine(stdout, formatConnectHint(colors));
+  }
+}
+
+async function runDisconnect(
+  pathArg: string,
+  uri: string | undefined,
+  deps: DisconnectDeps,
+  stdout: NodeJS.WritableStream,
+  colors: Colors,
+): Promise<void> {
+  const lookupPath = await resolveLookupPath(resolve(deps.cwd(), pathArg));
+  const stashPath = deps.stashPath ?? getStashPath();
+
+  let disconnectedPath = lookupPath;
+  let disconnectedUri = uri ?? "";
+
+  await withRegistryLock(
+    async () => {
+      const entries = await readRegistry(stashPath);
+      const found = entries.find((entry) => entry.record.path === lookupPath);
+      if (!found) {
+        throw cliError(`No stash found at ${shortenHomePath(lookupPath)}.`);
+      }
+
+      const currentUris = found.record.connections.map((connection) => formatUri(connection));
+      const displayPath = shortenHomePath(found.record.path);
+      let targetUri = uri;
+      if (!targetUri) {
+        if (currentUris.length === 0) {
+          throw cliError(`No active connections at ${displayPath}.`);
+        }
+        if (currentUris.length !== 1) {
+          throw cliError(`Multiple connections at ${displayPath}:`, [
+            ...currentUris.map((currentUri) => `  ${currentUri}`),
+            `Pass the URI to disconnect: stash disconnect ${displayPath} <uri>`,
+          ]);
+        }
+        [targetUri] = currentUris;
+      }
+
+      const nextConnections = found.record.connections.filter(
+        (connection) => formatUri(connection) !== targetUri,
+      );
+      if (nextConnections.length === found.record.connections.length) {
+        throw cliError(`Connection not found: ${targetUri}.`);
+      }
+
+      disconnectedPath = found.record.path;
+      disconnectedUri = targetUri;
+      await writeJsonFile(join(getStashDirPath(found.id, stashPath), "stash.json"), {
+        ...found.record,
+        connections: nextConnections,
+      } satisfies StashRecord);
+    },
+    { stashPath },
+  );
+
+  writeLine(stdout, formatDisconnected(disconnectedUri, shortenHomePath(disconnectedPath), colors));
+}
+
+async function runRelink(
+  oldPath: string,
+  newPath: string,
+  dangerouslyAllowGit: boolean,
+  deps: Pick<CliDependencies, "stashPath">,
+  stdout: NodeJS.WritableStream,
+  colors: Colors,
+): Promise<void> {
+  const oldCanonical = await resolveLookupPath(oldPath);
+  const newCanonical = await canonicalizeExistingPath(newPath);
+  ensureGitAllowed(newCanonical, dangerouslyAllowGit);
+  const displayOld = shortenHomePath(oldCanonical);
+  const displayNew = shortenHomePath(newCanonical);
+
+  if (oldCanonical === newCanonical) {
+    writeLine(stdout, formatAlreadyLinked(displayNew, colors));
+    return;
+  }
+
+  const stashPath = deps.stashPath ?? getStashPath();
+  await withRegistryLock(
+    async () => {
+      const entries = await readRegistry(stashPath);
+      const current = entries.find((entry) => entry.record.path === oldCanonical);
+      if (!current) {
+        throw cliError(`No stash found at ${displayOld}.`);
+      }
+      if (entries.some((entry) => entry.id !== current.id && entry.record.path === newCanonical)) {
+        throw cliError(`A stash already exists at ${displayNew}.`);
+      }
+      await writeJsonFile(join(getStashDirPath(current.id, stashPath), "stash.json"), {
+        ...current.record,
+        path: newCanonical,
+      } satisfies StashRecord);
+    },
+    { stashPath },
+  );
+
+  writeLine(stdout, formatRelinked(displayOld, displayNew, colors));
+}
+
+async function runStatus(
+  deps: StatusDeps,
+  stdout: NodeJS.WritableStream,
+  colors: Colors,
+): Promise<void> {
+  const daemonState = await deps
+    .getService()
+    .then((service) => service.status())
+    .then((status) => (status.running ? "running" : "stopped"))
+    .catch((error: unknown) => (isUnsupportedPlatformError(error) ? "unsupported" : "error"));
+
+  writeLine(stdout, formatDaemonState(daemonState, colors));
+  writeBlankLine(stdout);
+
+  const stashPath = deps.stashPath ?? getStashPath();
+  const entries = (await readRegistry(stashPath))
+    .filter((entry) => entry.record.connections.length > 0)
+    .sort((a, b) => a.record.path.localeCompare(b.record.path));
+
+  if (entries.length === 0) {
+    writeLine(stdout, "No stashes registered. Run `stash connect <path> <uri>` to add one (e.g. `stash connect . github:owner/repo`).");
+    return;
+  }
+
+  for (const [index, entry] of entries.entries()) {
+    if (index > 0) {
+      writeBlankLine(stdout);
+    }
+    const displayPath = shortenHomePath(entry.record.path);
+    const status = await readPersistedStatus(stashPath, entry.id);
+    if (status?.kind === "missing" || !existsSync(entry.record.path)) {
+      writeLine(stdout, `${displayPath} ${colors.yellow("(path missing)")}`);
+      writeLine(stdout, colors.gray(`Run: stash relink ${displayPath} <new-path>`));
+      continue;
+    }
+
+    writeLine(stdout, displayPath);
+    writeLine(stdout, renderStatusTable(entry, status, colors));
+  }
+
+  writeBlankLine(stdout);
+  writeLine(stdout, pluralize(entries.length, "stash"));
+}
+
+async function runStart(
+  serviceHandle: ServiceHandle,
+  stdout: NodeJS.WritableStream,
+  colors: Colors,
+): Promise<void> {
+  try {
+    await serviceHandle.install();
+  } catch (error) {
+    if (isUnsupportedPlatformError(error)) {
+      throw cliError("This platform does not support background services yet.");
+    }
+    throw error;
+  }
+  writeLine(stdout, `Daemon installed and ${colors.green("running")}`);
+}
+
+async function runStop(
+  serviceHandle: ServiceHandle,
+  stdout: NodeJS.WritableStream,
+): Promise<void> {
+  try {
+    const status = await serviceHandle.status();
+    if (!status.running) {
+      throw cliError("Daemon is not running.");
+    }
+    await serviceHandle.uninstall();
+  } catch (error) {
+    if (isUnsupportedPlatformError(error)) {
+      throw cliError("This platform does not support background services yet.");
+    }
+    throw error;
+  }
+  writeLine(stdout, "Daemon stopped");
+}
+
+export async function main(argv = process.argv, deps: CliDependencies = {}): Promise<number> {
   const cwd = deps.cwd ?? (() => process.cwd());
+  const input = deps.stdin ?? process.stdin;
   const readConfig = deps.readGlobalConfig ?? readGlobalConfig;
   const writeConfig = deps.writeGlobalConfig ?? writeGlobalConfig;
+  const stashPath = deps.stashPath ?? getStashPath();
   const serviceHandle = deps.service;
   const getService = async () => serviceHandle ?? (await createDefaultService(argv));
   const runDaemonCommand = deps.runDaemon ?? runDaemon;
   const stdout = deps.stdout ?? process.stdout;
   const stderr = deps.stderr ?? process.stderr;
+  const colors = createColors(Boolean(stdout.isTTY));
+  const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
+  let exitCode = 0;
 
-  const dirsToCheck = [cwd()];
-  try {
-    const config = await readConfig();
-    dirsToCheck.push(...getBackgroundStashes(config));
-  } catch {
-    // Global config unreadable — skip migration check.
-  }
-  let daemonBounced = false;
-  for (const dir of dirsToCheck) {
-    if (await bounceDaemonIfMigrationNeeded(dir, getService)) {
-      daemonBounced = true;
-      break;
+  async function runCommand(action: () => Promise<void>): Promise<void> {
+    try {
+      await action();
+      writeBlankLine(stdout);
+    } catch (error) {
+      exitCode = 1;
+      renderCliError(stderr, toCliCommandError(error), colors);
+      writeBlankLine(stderr);
     }
   }
-
-  const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
 
   const program = new Command()
     .name("stash")
@@ -734,103 +855,122 @@ export async function main(argv = process.argv, deps: CliDependencies = {}): Pro
 
   const setupCommand = program
     .command("setup")
-    .description("Configure global provider settings")
+    .description("Configure provider settings")
     .argument("<provider>", "Provider name")
     .allowUnknownOption(true)
     .action(async (providerName: string, _opts: unknown, command: Command) => {
-      await runSetup(
-        providerName,
-        command.opts() as Record<string, string | boolean | undefined>,
-        { readGlobalConfig: readConfig, writeGlobalConfig: writeConfig },
-        stdout,
-      );
+      await runCommand(async () => {
+        await runSetup(
+          providerName,
+          command.opts() as Record<string, string | boolean | undefined>,
+          { readGlobalConfig: readConfig, writeGlobalConfig: writeConfig },
+          { input, output: stdout },
+          stdout,
+          colors,
+        );
+      });
     });
 
   const connectCommand = program
     .command("connect")
-    .description("Connect this stash to a provider")
-    .argument("<provider>", "Provider name")
-    .argument("[name]", "Connection name")
+    .description("Connect a folder to a provider URI")
+    .argument("<path>", "Folder to connect (created if it does not exist)")
+    .argument("<uri>", "Provider URI (e.g. github:owner/repo)")
     .allowUnknownOption(true)
-    .action(
-      async (
-        providerName: string,
-        connectionName: string | undefined,
-        _opts: unknown,
-        command: Command,
-      ) => {
-        const opts = command.opts() as Record<string, string | boolean | undefined>;
+    .option("--dangerously-allow-git", "Allow syncing a git repository")
+    .addHelpText(
+      "after",
+      "\nExamples:\n" +
+        "  $ stash connect . github:owner/repo               # current directory\n" +
+        "  $ stash connect ~/Notes github:owner/notes        # existing folder\n" +
+        "  $ stash connect ./inbox github:owner/inbox        # creates ./inbox if missing\n",
+    )
+    .action(async (pathArg: string, uri: string, _opts: unknown, command: Command) => {
+      await runCommand(async () => {
         await runConnect(
-          providerName,
-          connectionName,
-          opts,
+          pathArg,
+          uri,
+          command.opts() as Record<string, string | boolean | undefined>,
           {
             cwd,
             readGlobalConfig: readConfig,
             writeGlobalConfig: writeConfig,
+            stashPath,
             getService,
           },
+          { input, output: stdout },
           stdout,
+          colors,
         );
-      },
-    );
+      });
+    });
 
   program
     .command("disconnect")
-    .description("Disconnect a named connection or stash")
-    .argument("[name]", "Connection name")
-    .option("--all", "Disconnect all connections in the current stash")
-    .option("--path <path>", "Disconnect a stash by path")
-    .action(async (name: string | undefined, options: { all?: boolean; path?: string }) => {
-      await runDisconnect(
-        name,
-        options.all === true,
-        options.path,
-        cwd,
-        readConfig,
-        writeConfig,
-        stdout,
-      );
+    .description("Disconnect a stash")
+    .argument("<path>", "Folder to disconnect")
+    .argument("[uri]", "Connection URI to drop (required when the stash has multiple connections)")
+    .addHelpText(
+      "after",
+      "\nExamples:\n" +
+        "  $ stash disconnect .                             # current directory\n" +
+        "  $ stash disconnect ~/Notes                       # only connection\n" +
+        "  $ stash disconnect ~/Notes github:owner/notes    # explicit URI\n",
+    )
+    .action(async (pathArg: string, uri: string | undefined) => {
+      await runCommand(async () => {
+        await runDisconnect(pathArg, uri, { cwd, stashPath }, stdout, colors);
+      });
     });
+
   program
-    .command("sync")
-    .description("Sync local files with connections")
-    .action(() => runSync(cwd, readConfig));
-  program
-    .command("watch")
-    .description("Watch and sync continuously")
-    .action(() => runWatch(cwd, readConfig));
+    .command("relink")
+    .description("Move a stash to a new path (use after renaming or moving the folder)")
+    .argument("<old-path>", "Current path of the stash (may no longer exist)")
+    .argument("<new-path>", "New path of the folder")
+    .option("--dangerously-allow-git", "Allow relinking to a git repository")
+    .action(async (oldPath: string, newPath: string, options: { dangerouslyAllowGit?: boolean }) => {
+      await runCommand(async () => {
+        await runRelink(
+          oldPath,
+          newPath,
+          options.dangerouslyAllowGit === true,
+          { stashPath },
+          stdout,
+          colors,
+        );
+      });
+    });
+
   program
     .command("status")
-    .description("Show all connected stashes")
+    .description("Show registered stashes")
     .action(async () => {
-      await runStatusAll(readConfig, await getService(), stdout);
+      await runCommand(async () => {
+        await runStatus(
+          {
+            stashPath,
+            getService,
+          },
+          stdout,
+          colors,
+        );
+      });
     });
-
-  const configCommand = program.command("config").description("Manage stash config");
-
-  configCommand
-    .command("set")
-    .description("Set a stash config value")
-    .argument("<key>", "Config key")
-    .argument("<value>", "Config value")
-    .action((key: string, value: string) => runConfigSet(key, value, cwd, readConfig, stdout));
-
-  configCommand
-    .command("get")
-    .description("Get a stash config value")
-    .argument("<key>", "Config key")
-    .action((key: string) => runConfigGet(key, cwd, readConfig, stdout));
 
   program
     .command("start")
     .description("Start background sync")
-    .action(async () => runStart(await getService(), readConfig, stdout));
+    .action(async () =>
+      runCommand(async () => runStart(await getService(), stdout, colors)),
+    );
 
   program
     .command("stop")
     .description("Stop background sync")
-    .action(async () => runStop(await getService(), readConfig, stdout));
+    .action(async () =>
+      runCommand(async () => runStop(await getService(), stdout)),
+    );
 
   program
     .command("daemon", { hidden: true })
@@ -838,31 +978,34 @@ export async function main(argv = process.argv, deps: CliDependencies = {}): Pro
     .action(() => runDaemonCommand());
 
   const commandName = argv[2];
-  const providerName = argv[3];
-  if (providerName && (commandName === "setup" || commandName === "connect")) {
-    const provider = providers[providerName];
-    if (provider) {
-      if (commandName === "setup") {
-        addFieldOptions(setupCommand, provider.spec.setup);
-      } else {
-        addFieldOptions(connectCommand, [...provider.spec.setup, ...provider.spec.connect]);
+  const providerToken =
+    commandName === "connect" && argv[4] && !argv[3]?.includes(":") ? argv[4] : argv[3];
+  if (providerToken && (commandName === "setup" || commandName === "connect")) {
+    try {
+      const uriProvider =
+        commandName === "connect" && providerToken.includes(":")
+          ? parseUri(providerToken).provider
+          : providerToken;
+      const provider = providers[uriProvider];
+      if (provider) {
+        if (commandName === "setup") {
+          addFieldOptions(setupCommand, getGlobalConfigItems(provider));
+        } else {
+          addFieldOptions(connectCommand, getGlobalConfigItems(provider));
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof InvalidUriError)) {
+        throw error;
       }
     }
   }
 
   if (argv.length <= 2) {
     program.outputHelp();
-    return;
+    return exitCode;
   }
 
   await program.parseAsync(argv);
-
-  const skipRestart = commandName === "stop" || commandName === "daemon";
-  if (daemonBounced && !skipRestart) {
-    try {
-      await (await getService()).install();
-    } catch {
-      // Best-effort restart — service may be unsupported or unavailable.
-    }
-  }
+  return exitCode;
 }

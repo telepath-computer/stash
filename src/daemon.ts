@@ -1,16 +1,25 @@
 import watcher from "@parcel/watcher";
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { getGlobalConfigPath, normalizeGlobalConfig, readGlobalConfig } from "./global-config.ts";
+import {
+  getGlobalConfigPath,
+  getProviderConfig,
+  getStashDirPath,
+  normalizeGlobalConfig,
+} from "./global-config.ts";
+import { withRegistryLock } from "./registry-lock.ts";
 import { Stash } from "./stash.ts";
-import type { GlobalConfig } from "./types.ts";
+import type { GlobalConfig, StashRecord } from "./types.ts";
 import { Watch, type WatchStatus } from "./watch.ts";
+import { readJsonFile, writeJsonFile } from "./utils/fs.ts";
 
 const MAX_LOG_BYTES = 1_000_000;
+const DEFAULT_POLL_MS = 30_000;
+const ORPHAN_MAX_AGE_MS = 5 * 60_000;
 
 type SubscribeFn = typeof watcher.subscribe;
-type ConfigSubscription = Awaited<ReturnType<typeof watcher.subscribe>>;
+type WatchSubscription = Awaited<ReturnType<typeof watcher.subscribe>>;
 
 type RunningWatch = {
   start(): Promise<void>;
@@ -18,8 +27,7 @@ type RunningWatch = {
 };
 
 type CreateWatchArgs = {
-  dir: string;
-  globalConfig: GlobalConfig;
+  stash: Stash;
   onStatus: (status: WatchStatus) => Promise<void>;
 };
 
@@ -31,19 +39,42 @@ type BackgroundDaemonOptions = {
   subscribe?: SubscribeFn;
   createWatch?: CreateWatchFn;
   log?: (message: string) => void;
+  pollMs?: number;
 };
 
-type PersistedWatchStatus = {
-  kind: WatchStatus["kind"];
+type PersistedStatus = {
+  kind: string;
   lastSync: string | null;
   summary: string | null;
   error: string | null;
 };
 
+type DesiredEntry = {
+  id: string;
+  record: StashRecord;
+  providerConfig: Record<string, Record<string, string>>;
+  key: string;
+};
+
+type RegistrySnapshot = {
+  live: Map<string, DesiredEntry>;
+  missing: Map<string, DesiredEntry>;
+  tombstones: Set<string>;
+  orphans: Set<string>;
+};
+
+type RunningEntry = {
+  key: string;
+  watch: RunningWatch;
+};
+
+async function readGlobalConfigAtPath(configPath: string): Promise<GlobalConfig> {
+  return normalizeGlobalConfig(await readJsonFile(configPath, {}));
+}
+
 async function defaultCreateWatch(args: CreateWatchArgs): Promise<RunningWatch> {
-  const stash = await Stash.load(args.dir, args.globalConfig);
-  const watch = new Watch(stash, {
-    dir: args.dir,
+  const watch = new Watch(args.stash, {
+    dir: args.stash.record.path,
     onStatus: (status) => {
       void args.onStatus(status);
     },
@@ -58,7 +89,7 @@ async function defaultCreateWatch(args: CreateWatchArgs): Promise<RunningWatch> 
   };
 }
 
-function serializeStatus(status: WatchStatus): PersistedWatchStatus {
+function serializeStatus(status: WatchStatus): PersistedStatus {
   if (status.kind === "synced") {
     return {
       kind: status.kind,
@@ -118,24 +149,38 @@ async function appendCappedLog(path: string, line: string): Promise<void> {
   await writeFile(path, lines.join("\n").replace(/^\n+/, ""), "utf8");
 }
 
+async function isDirectory(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 export class BackgroundDaemon {
   private readonly configPath: string;
+  private readonly stashPath: string;
   private readonly readGlobalConfigFn: () => Promise<GlobalConfig>;
   private readonly subscribeFn: SubscribeFn;
   private readonly createWatchFn: CreateWatchFn;
   private readonly log: (message: string) => void;
-  private readonly running = new Map<string, RunningWatch>();
-  private configSubscription: ConfigSubscription | null = null;
+  private readonly pollMs: number;
+  private readonly running = new Map<string, RunningEntry>();
+  private readonly subscriptions: WatchSubscription[] = [];
   private started = false;
   private stopping = false;
   private reloadPromise: Promise<void> | null = null;
+  private pendingReload = false;
+  private pollTimer: NodeJS.Timeout | null = null;
 
   constructor(options: BackgroundDaemonOptions = {}) {
     this.configPath = options.configPath ?? getGlobalConfigPath();
-    this.readGlobalConfigFn = options.readGlobalConfig ?? readGlobalConfig;
+    this.stashPath = dirname(this.configPath);
+    this.readGlobalConfigFn = options.readGlobalConfig ?? (() => readGlobalConfigAtPath(this.configPath));
     this.subscribeFn = options.subscribe ?? watcher.subscribe;
     this.createWatchFn = options.createWatch ?? defaultCreateWatch;
     this.log = options.log ?? ((message) => console.log(message));
+    this.pollMs = options.pollMs ?? DEFAULT_POLL_MS;
   }
 
   get watchCount(): number {
@@ -148,28 +193,11 @@ export class BackgroundDaemon {
     }
 
     this.started = true;
-    await mkdir(dirname(this.configPath), { recursive: true });
-    try {
-      this.configSubscription = await this.subscribeFn(
-        dirname(this.configPath),
-        (error, events) => {
-          if (error) {
-            this.log(`background daemon config watch failed: ${error.message}`);
-            return;
-          }
-          if (!events.some((event) => event.path === this.configPath)) {
-            return;
-          }
-          void this.reload();
-        },
-      );
-    } catch (error) {
-      this.log(
-        `native config watcher unavailable, config hot-reload disabled: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-
+    await mkdir(this.stashPath, { recursive: true });
+    await this.installWatchers();
+    await this.runStartupGc();
     await this.reload();
+    this.schedulePoll();
   }
 
   async stop(): Promise<void> {
@@ -178,9 +206,10 @@ export class BackgroundDaemon {
     }
 
     this.stopping = true;
-    if (this.configSubscription) {
-      await this.configSubscription.unsubscribe();
-      this.configSubscription = null;
+    this.clearPollTimer();
+    while (this.subscriptions.length > 0) {
+      const subscription = this.subscriptions.pop();
+      await subscription?.unsubscribe();
     }
     if (this.reloadPromise) {
       await this.reloadPromise;
@@ -188,48 +217,106 @@ export class BackgroundDaemon {
 
     const entries = [...this.running.entries()];
     this.running.clear();
-    await Promise.all(entries.map(async ([, watchHandle]) => watchHandle.stop()));
+    await Promise.all(entries.map(async ([, entry]) => entry.watch.stop()));
+  }
+
+  private schedulePoll(): void {
+    this.clearPollTimer();
+    this.pollTimer = setTimeout(() => {
+      this.pollTimer = null;
+      if (this.stopping) {
+        return;
+      }
+      void this.reload().finally(() => {
+        if (!this.stopping) {
+          this.schedulePoll();
+        }
+      });
+    }, this.pollMs);
+  }
+
+  private clearPollTimer(): void {
+    if (!this.pollTimer) {
+      return;
+    }
+    clearTimeout(this.pollTimer);
+    this.pollTimer = null;
+  }
+
+  private async installWatchers(): Promise<void> {
+    for (const watchedPath of [this.configPath, this.stashPath]) {
+      try {
+        const subscription = await this.subscribeFn(watchedPath, (error, events) => {
+          if (error) {
+            this.log(`background daemon watcher failed: ${error.message}`);
+            return;
+          }
+          if (
+            watchedPath === this.configPath &&
+            !events.some((event) => event.path === this.configPath)
+          ) {
+            return;
+          }
+          void this.reload();
+        });
+        this.subscriptions.push(subscription);
+      } catch (error) {
+        this.log(
+          `native watcher unavailable, using poll-only reconciliation: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
   }
 
   private async reload(): Promise<void> {
     if (this.reloadPromise) {
+      this.pendingReload = true;
       return this.reloadPromise;
     }
 
     this.reloadPromise = (async () => {
-      const config = normalizeGlobalConfig(await this.readGlobalConfigFn());
-      const desired = new Set(config.background.stashes);
+      do {
+        this.pendingReload = false;
 
-      for (const [dir, watchHandle] of [...this.running.entries()]) {
-        if (desired.has(dir)) {
-          continue;
-        }
-        this.running.delete(dir);
-        await watchHandle.stop();
-        this.log(`stopped watching ${dir}`);
-      }
+        const globalConfig = normalizeGlobalConfig(await this.readGlobalConfigFn());
+        const snapshot = await this.readRegistrySnapshot(globalConfig);
+        const retainedIds = new Set<string>([
+          ...snapshot.live.keys(),
+          ...snapshot.missing.keys(),
+          ...snapshot.tombstones,
+        ]);
 
-      for (const dir of desired) {
-        if (this.running.has(dir)) {
-          continue;
+        for (const id of snapshot.orphans) {
+          await this.deleteOrphanDirIfOld(id);
         }
-        try {
-          const watchHandle = await this.createWatchFn({
-            dir,
-            globalConfig: config,
-            onStatus: async (status) => {
-              await this.persistStatus(dir, status);
-            },
-          });
-          this.running.set(dir, watchHandle);
-          await watchHandle.start();
-          this.log(`watching ${dir}`);
-        } catch (error) {
-          this.log(
-            `failed to start ${dir}: ${error instanceof Error ? error.message : String(error)}`,
-          );
+
+        for (const id of snapshot.tombstones) {
+          await this.stopRunning(id);
+          await this.deleteTombstoneDir(id);
         }
-      }
+
+        for (const [id] of snapshot.missing) {
+          await this.stopRunning(id);
+          await this.persistMissingStatus(id);
+        }
+
+        for (const id of [...this.running.keys()]) {
+          if (!retainedIds.has(id)) {
+            await this.stopRunning(id);
+          }
+        }
+
+        for (const [id, entry] of snapshot.live) {
+          const current = this.running.get(id);
+          if (current && current.key === entry.key) {
+            continue;
+          }
+          if (current) {
+            await this.stopRunning(id);
+          }
+          await this.startWatch(entry, globalConfig);
+        }
+      } while (this.pendingReload && !this.stopping);
     })();
 
     try {
@@ -239,19 +326,170 @@ export class BackgroundDaemon {
     }
   }
 
-  private async persistStatus(dir: string, status: WatchStatus): Promise<void> {
-    const stashDir = join(dir, ".stash");
-    if (!existsSync(stashDir)) {
+  private async startWatch(entry: DesiredEntry, globalConfig: GlobalConfig): Promise<void> {
+    try {
+      const stash = await Stash.load(entry.id, globalConfig, { stashPath: this.stashPath });
+      const watch = await this.createWatchFn({
+        stash,
+        onStatus: async (status) => {
+          await this.persistStatus(entry.id, status);
+        },
+      });
+      this.running.set(entry.id, {
+        key: entry.key,
+        watch,
+      });
+      await watch.start();
+      this.log(`watching ${entry.id}`);
+    } catch (error) {
+      this.log(
+        `failed to start ${entry.id}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  private async stopRunning(id: string): Promise<void> {
+    const current = this.running.get(id);
+    if (!current) {
       return;
     }
+    this.running.delete(id);
+    await current.watch.stop();
+    this.log(`stopped watching ${id}`);
+  }
 
+  private async readRegistrySnapshot(globalConfig: GlobalConfig): Promise<RegistrySnapshot> {
+    const live = new Map<string, DesiredEntry>();
+    const missing = new Map<string, DesiredEntry>();
+    const tombstones = new Set<string>();
+    const orphans = new Set<string>();
+
+    for (const id of await this.listStashIds()) {
+      const record = await this.readStashRecordIfExists(id);
+      if (!record) {
+        orphans.add(id);
+        continue;
+      }
+
+      if (record.connections.length === 0) {
+        tombstones.add(id);
+        continue;
+      }
+
+      const providerConfig = Object.fromEntries(
+        [...new Set(record.connections.map((connection) => connection.provider))]
+          .sort((a, b) => a.localeCompare(b))
+          .map((provider) => [provider, getProviderConfig(globalConfig, provider)]),
+      );
+      const entry = {
+        id,
+        record,
+        providerConfig,
+        key: JSON.stringify({
+          record,
+          providerConfig,
+        }),
+      } satisfies DesiredEntry;
+
+      if (existsSync(record.path)) {
+        live.set(id, entry);
+      } else {
+        missing.set(id, entry);
+      }
+    }
+
+    return { live, missing, tombstones, orphans };
+  }
+
+  private async listStashIds(): Promise<string[]> {
+    if (!(await isDirectory(this.stashPath))) {
+      return [];
+    }
+
+    const entries = await readdir(this.stashPath);
+    const ids: string[] = [];
+    for (const entry of entries.sort((a, b) => a.localeCompare(b))) {
+      if (entry.startsWith(".")) {
+        continue;
+      }
+      if (!(await isDirectory(join(this.stashPath, entry)))) {
+        continue;
+      }
+      ids.push(entry);
+    }
+    return ids;
+  }
+
+  private async readStashRecordIfExists(id: string): Promise<StashRecord | null> {
+    const path = join(getStashDirPath(id, this.stashPath), "stash.json");
+    try {
+      const raw = await readFile(path, "utf8");
+      return JSON.parse(raw) as StashRecord;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  private async persistStatus(id: string, status: WatchStatus): Promise<void> {
+    const stashDir = getStashDirPath(id, this.stashPath);
     await mkdir(stashDir, { recursive: true });
-    await writeFile(
-      join(stashDir, "status.json"),
-      JSON.stringify(serializeStatus(status), null, 2),
-      "utf8",
-    );
+    await writeJsonFile(join(stashDir, "status.json"), serializeStatus(status));
     await appendCappedLog(join(stashDir, "sync.log"), formatLogLine(status));
+  }
+
+  private async persistMissingStatus(id: string): Promise<void> {
+    const stashDir = getStashDirPath(id, this.stashPath);
+    await mkdir(stashDir, { recursive: true });
+    await writeJsonFile(join(stashDir, "status.json"), {
+      kind: "missing",
+      lastSync: null,
+      summary: null,
+      error: null,
+    } satisfies PersistedStatus);
+  }
+
+  private async deleteTombstoneDir(id: string): Promise<void> {
+    await withRegistryLock(
+      async () => {
+        const record = await this.readStashRecordIfExists(id);
+        if (record && record.connections.length === 0) {
+          await rm(getStashDirPath(id, this.stashPath), { recursive: true, force: true });
+        }
+      },
+      { stashPath: this.stashPath },
+    );
+  }
+
+  private async deleteOrphanDirIfOld(id: string): Promise<void> {
+    await withRegistryLock(
+      async () => {
+        const stashDir = getStashDirPath(id, this.stashPath);
+        if (!(await isDirectory(stashDir))) {
+          return;
+        }
+        if ((await this.readStashRecordIfExists(id)) !== null) {
+          return;
+        }
+        const ageMs = Date.now() - (await stat(stashDir)).mtimeMs;
+        if (ageMs > ORPHAN_MAX_AGE_MS) {
+          await rm(stashDir, { recursive: true, force: true });
+        }
+      },
+      { stashPath: this.stashPath },
+    );
+  }
+
+  private async runStartupGc(): Promise<void> {
+    const snapshot = await this.readRegistrySnapshot(normalizeGlobalConfig(await this.readGlobalConfigFn()));
+    for (const id of snapshot.orphans) {
+      await this.deleteOrphanDirIfOld(id);
+    }
+    for (const id of snapshot.tombstones) {
+      await this.deleteTombstoneDir(id);
+    }
   }
 }
 

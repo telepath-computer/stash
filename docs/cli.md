@@ -1,480 +1,311 @@
 # CLI
 
-The CLI is the user-facing layer for provider setup, sync orchestration, and terminal output.
+The CLI is the user-facing layer for provider setup, connection management, status display, and background-service lifecycle.
+
+All commands print plain text. Errors go to **stderr** with an `Error:` prefix and exit code 1; success messages go to **stdout**. Color is applied only when stdout is a TTY (via `picocolors`); non-TTY output is the same characters without ANSI codes.
+
+## Style
+
+These rules apply across every command. Color is applied via `picocolors` and only when stdout is a TTY; non-TTY output is the same characters without ANSI codes.
+
+### Palette
+
+Color is used sparingly. The aim is *one* accented token per line at most — usually a verb at the start, or a state value in the daemon line / status table. Connector words and URIs in plain confirmation lines stay default; URIs are only colored inside the `status` table (where the column structure makes the accent earn its place) or inside error messages (where it draws the eye to the offending value).
+
+| Role     | Color   | Used for                                                         |
+|----------|---------|------------------------------------------------------------------|
+| default  | (none)  | most content — paths, URIs in confirmation lines, connectors     |
+| accent   | cyan    | URIs inside the `status` table; URIs inside error messages       |
+| success  | green   | confirmation verbs (`Connected`, `Disconnected`, `Configured`, `Relinked`, `Already connected`, `Already linked`); daemon `running` |
+| warn     | yellow  | daemon `stopped`; `(path missing)` marker; `unsupported` state   |
+| error    | red     | `Error:` prefix on stderr; daemon `error` state; `State` value when it's `error`; `Message` value when sourced from an error |
+| muted    | grey    | hint suffixes, table row labels, time qualifiers — see below     |
+
+### What gets greyed
+
+- **Table row labels** in `status` (`Connection`, `State`, `Last sync`, `Pending`, `Message`) — let the values carry the weight.
+- **Time qualifiers** in the `Last sync` row — `2m ago`, `14s ago`.
+- **Hint suffixes** — the second line on `connect` (`Background sync is on. Run \`stash status\` to check.`) is fully muted; same for the `Run: stash relink …` line under a path-missing stash.
+
+Connector words (`to`, `from`, `—`, `→`) in confirmation lines are **default**, not grey — they stay readable next to the verb.
+
+### Paths
+
+Paths in output are **tilde-shortened** (`/Users/rupert/Notes` → `~/Notes`). Stored canonical paths on disk remain absolute; this is rendering only.
+
+### Symbols
+
+- **`→`** (muted) separates source and destination on transitions (`relink ~/old → ~/new`, `connect ~/Notes → github:owner/notes` in non-confirmation contexts).
+- **No emojis** in any output.
+- **No bold** — color does the emphasis work.
+
+### Punctuation
+
+- **No trailing periods** on confirmation lines. Errors do end with periods.
+- Connectors are lowercase prose (`to`, `from`, `at`), not symbols.
+
+### Spacing
+
+- **Every command's output ends with a blank line** so the shell prompt has breathing room. Tested in the integration suite.
+- **Two-line `connect` output** (success + daemon hint) has no blank line between the two lines; the hint is rendered directly under the confirmation in muted grey.
+- **`status`** uses a blank line between the daemon header, each per-stash block, and the count outro.
+- **Errors** are tight: summary line on stderr, any detail lines immediately under it; the trailing blank line is on **stderr**, not stdout.
 
 ## Commands
 
 ### `stash setup <provider>`
 
-Writes global provider configuration.
+Writes global provider configuration to `~/.stash/config.json`. Always prompts for the provider's `global` fields; values from CLI flags (e.g. `--token`) override prompts.
+
+Re-running `setup` re-prompts and overwrites existing values.
 
 Example:
 
 ```bash
-stash setup github --token ghp_...
+stash setup github
+# prompts for: Personal access token
+
+stash setup github --token ghp_…    # no prompt
 ```
 
-If required fields are not provided on the command line, the CLI prompts for them. Secret fields are masked.
+Output:
 
-### `stash connect <provider> [name]`
+```text
+Configured github
+```
 
-Initializes the current directory as a stash if needed, writes per-directory named connection config, and registers the stash for background sync.
+Color: `Configured` green; provider name default.
+
+### `stash connect <path> <uri> [--dangerously-allow-git]`
+
+Connects a folder to a provider URI. `<path>` is required — pass `.` for the current directory. If `<path>` does not exist, it is created (recursively).
+
+The URI form is `<provider>:<id>`, e.g. `github:owner/repo`. The CLI parses the provider, validates the connection, and registers the stash under `~/.stash/<id>/`.
+
+If the provider's global fields are not yet set (e.g. github token), `connect` prompts for them and persists the result to `~/.stash/config.json` *only after* the connection validates successfully.
+
+Examples:
+
+```bash
+stash connect . github:owner/repo                # current directory
+stash connect ~/Notes github:owner/notes         # existing folder
+stash connect ./inbox github:owner/inbox         # creates ./inbox if missing
+```
+
+Output (new connection):
+
+```text
+Connected github:owner/repo to ~/Notes
+Background sync is on. Run `stash status` to check.
+```
+
+Color: `Connected` green; everything else default; the second line entirely muted grey.
+
+The second line appears only when the daemon is running. If the daemon isn't running (or the platform doesn't support it), only the first line prints.
+
+Output (idempotent re-run on the same URI):
+
+```text
+Already connected — github:owner/repo
+```
+
+Color: `Already connected` green; everything else default.
+
+Output (`.git/` detected without `--dangerously-allow-git`), to **stderr**, exit 1:
+
+```text
+Error: ~/code/myrepo is a git repository.
+Pass --dangerously-allow-git if you really want stash to sync this folder.
+```
+
+Output (path already connected to a different URI), to **stderr**, exit 1:
+
+```text
+Error: ~/Notes is already connected to github:owner/old-repo.
+Multi-connection per stash is not yet supported. Run `stash disconnect ~/Notes` first.
+```
+
+### `stash disconnect <path> [<uri>]`
+
+Disconnects a stash from a provider URI. `<path>` is required — pass `.` for the current directory. If `<uri>` is omitted and the stash has exactly one connection, drops that connection.
+
+If the stash has multiple connections (a future feature), `<uri>` is required.
+
+The CLI atomically rewrites `~/.stash/<id>/stash.json` to drop the connection. The per-stash directory is *not* deleted by the CLI — when the last connection is removed, the daemon picks up the empty-connections tombstone and cleans up the directory.
+
+Examples:
+
+```bash
+stash disconnect .                               # current directory
+stash disconnect ~/Notes                         # only connection
+stash disconnect ~/Notes github:owner/notes      # explicit URI
+```
+
+Output:
+
+```text
+Disconnected github:owner/notes from ~/Notes
+```
+
+Color: `Disconnected` green; everything else default.
+
+Output (no stash at path), to **stderr**, exit 1:
+
+```text
+Error: No stash found at ~/Notes.
+```
+
+Output (multiple connections, no `<uri>` given), to **stderr**, exit 1:
+
+```text
+Error: Multiple connections at ~/Notes:
+  github:owner/notes
+  github:owner/notes-mirror
+Pass the URI to disconnect: stash disconnect ~/Notes <uri>
+```
+
+### `stash relink <old-path> <new-path> [--dangerously-allow-git]`
+
+Moves a registered stash to a new path. The old path may no longer exist (e.g. you renamed the folder). The new path must exist.
+
+The CLI atomically rewrites `~/.stash/<id>/stash.json` with the new `path` field. The stash's id stays the same.
 
 Example:
 
 ```bash
-stash connect github --repo user/repo
-stash connect github origin --repo user/repo
+stash relink ~/OldFolder ~/Documents/NewFolder
 ```
 
-If `name` is omitted, stash uses the provider name as the connection name.
-
-If global setup fields are missing, `connect` collects and writes them before storing connection fields.
-
-Example output:
+Output:
 
 ```text
-Connected origin.
+Relinked ~/OldFolder → ~/Documents/NewFolder
 ```
 
-If background sync is already running:
+Color: `Relinked` green; everything else default.
+
+Output (no stash at old path), to **stderr**, exit 1:
 
 ```text
-Connected origin.
-Background sync is on · This stash is now syncing automatically
+Error: No stash found at ~/OldFolder.
 ```
 
-**TTY colors (stdout):** `Connected origin.` is default foreground. On the second line, `Background sync is on` is **green**; the middle dot `·` and `This stash is now syncing automatically` are **dim**. **Non-TTY:** same characters, no ANSI codes.
-
-Connection names are unique within a stash, and **only one connection per stash** is allowed (see [Output examples and TTY colors](#output-examples-and-tty-colors)).
-
-If the directory contains `.git/` and per-stash config does not have `allow-git: true`, `connect` still succeeds but prints a warning — see [Git safety warning on `connect`](#git-safety-warning-on-connect).
-
-### `stash disconnect <name>`
-
-Disconnects one named connection from the current stash.
-
-If that was the last remaining connection, the CLI also removes the stash from the global background registry and deletes `.stash/`.
-
-Example **stdout** (one connection removed, others remain):
+Output (a stash already exists at the new path), to **stderr**, exit 1:
 
 ```text
-Disconnected origin.
+Error: A stash already exists at ~/Documents/NewFolder.
 ```
-
-Example **stdout** (last connection — same message as `--all` after teardown):
-
-```text
-Disconnected stash.
-```
-
-Unknown name exits with code `1` and **stderr**:
-
-```text
-Connection not found: backup
-```
-
-**TTY:** default foreground (no color) for these disconnect messages.
-
-### `stash disconnect --all`
-
-Disconnects the current stash completely.
-
-The CLI removes all named connections, unregisters the stash from background sync, and removes `.stash/`.
-
-### `stash disconnect --path <path>`
-
-Disconnects a stash by path from anywhere.
-
-If the directory still exists, stash also removes `.stash/`. If the path is not registered, the command prints `No stash registered at that path.` and leaves global state unchanged.
-
-### `stash disconnect` with no arguments
-
-Fails with:
-
-```text
-argument required — run `stash disconnect <name>`, `stash disconnect --all`, or `stash disconnect --path <path>`
-```
-
-### `stash config set <key> <value>`
-
-Writes one per-stash config value into `.stash/config.json`.
-
-Current supported keys:
-
-- `allow-git`
-
-Rules:
-
-- unknown keys fail
-- `true` and `false` are stored as JSON booleans
-- the current directory must already be a stash
-
-Example **stdout**:
-
-```text
-allow-git=true
-```
-
-**TTY:** default foreground.
-
-### `stash config get <key>`
-
-Prints one per-stash config value from `.stash/config.json`.
-
-Example **stdout** when set:
-
-```text
-true
-```
-
-When the key is unset, prints an empty line (still **stdout**). **TTY:** default foreground.
-
-### `stash start`
-
-Installs and starts the OS-managed background sync service:
-
-- macOS uses a user `launchd` agent
-- Linux uses a user `systemd` unit
-- the installed service runs the hidden `stash daemon` entrypoint
-- other platforms report that background sync is not supported
-
-Example output:
-
-```text
-Background sync is on
-Watching 3 stashes · starts on startup
-```
-
-**TTY:** first line **green**; second line entirely **dim**.
-
-If the service is already installed and running:
-
-```text
-Background sync is already running
-```
-
-**TTY:** entire line **green**.
-
-On an unsupported platform, `stash start` prints to **stdout** and sets exit code `1`:
-
-```text
-Background sync is not supported on this platform
-```
-
-**TTY:** entire line **red**.
-
-### `stash stop`
-
-Stops and uninstalls the OS-managed background sync service for the current user.
-
-Example output:
-
-```text
-Background sync is off
-Run `stash start` to resume syncing 3 stashes
-```
-
-**TTY:** first line **red**; second line **dim**.
-
-If the service is not installed and not running:
-
-```text
-Background sync is not running
-```
-
-**TTY:** entire line **red** (also used when the platform does not support background sync).
-
-### `stash sync`
-
-Runs one sync cycle.
-
-On a **TTY**, a single live line is updated. Spinner frames are `◐`, `◓`, `◑`, `◒` in **yellow**, followed by the rest of the line (lowercase status text).
-
-Example progression:
-
-```text
-◐ checking...
-◐ syncing... ↑ hello.md
-◐ syncing... ↓ photo.jpg
-✓ synced (1↑ 1↓)
-```
-
-If there are no changes:
-
-```text
-◐ checking...
-✓ up to date
-```
-
-If sync fails:
-
-```text
-✗ sync failed: network error
-```
-
-**TTY:** `✗` is **red**; `sync failed:` and the message use the default foreground.
-
-If sync is blocked by git safety:
-
-```text
-✗ sync failed: git repository detected — run `stash config set allow-git true` to allow syncing
-```
-
-### `stash watch`
-
-Continuously syncs the current stash until interrupted.
-
-Behavior:
-
-- starts with an immediate sync
-- debounces filesystem-triggered syncs by 1 second
-- polls every 10 seconds to pick up remote-only changes
-- resets the poll timer after each completed sync
-- `.` triggers an immediate sync
-- `q` and `Ctrl-C` stop the watcher
-- waits for an in-flight sync to finish before normal shutdown
-
-Additional behavior worth preserving:
-
-- in TTY mode, watch shows a live status line with countdowns to the next poll
-- in non-TTY mode, watch prints line-based results instead of updating one live line
-- sync and watcher errors do not stop watch; it keeps retrying on the normal poll cadence
-- filesystem events that arrive during a sync are queued and trigger a follow-up debounced sync
-
-If sync is blocked by git safety, watch shows the same error message and keeps retrying on the normal poll cadence until the user removes `.git/` or sets `allow-git`.
-
-If no provider is connected, watch exits with:
-
-```text
-no connection configured — run `stash connect <provider> <name>` first
-```
-
-(Exact casing matches the CLI.)
-
-**TTY** watch mode (live line, examples):
-
-```text
-● up to date · checking in 8s
-```
-
-**TTY colors:** `●` **green**; `up to date`, the middle dot, and `checking in 8s` are **dim**.
-
-After a sync that applied changes:
-
-```text
-● 2↑ 1↓ · checking in 10s
-```
-
-**TTY:** `●` **green**; the summary (`2↑ 1↓`) is **default** foreground; `·` and countdown are **dim**.
-
-When a sync errors but watch keeps retrying:
-
-```text
-✗ sync failed: <message> · retrying in 10s
-```
-
-**TTY:** `✗` **red**; `sync failed:` and `<message>` default foreground; ` · retrying in …` **dim**.
-
-**Non-TTY** (piped stdout), error status prints one line:
-
-```text
-✗ sync failed: <message>
-```
-
-**TTY:** `✗` **red**; remainder default.
 
 ### `stash status`
 
-Prints **global** background sync state, then every stash path registered for background sync (from `~/.stash/config.json` or `$XDG_CONFIG_HOME/stash/config.json`). The current working directory does not matter.
+Shows daemon liveness and a per-stash block for every registered stash.
 
-It shows:
-
-- whether background sync is running and how many stashes are registered
-- a blank line, then for each registered path: basename, full path, and each connection’s provider label
-- local pending changes and last sync time (from disk vs `snapshot.json`), or a background error when the daemon reported failure
-- `Directory not found` / `Not a stash` when a registered path is missing or no longer a stash
-
-Example output:
+Output:
 
 ```text
-Background sync is on · watching 2 stashes
+Daemon: running
 
-● notes
-  /Users/me/notes
-  origin (github) · Up to date · synced 2m ago
+~/Notes
+┌────────────┬──────────────────────────┐
+│ Connection │ github:owner/notes       │
+│ State      │ idle                     │
+│ Last sync  │ 2m ago                   │
+│ Pending    │ 3 modified, 1 added      │
+└────────────┴──────────────────────────┘
 
-● work
-  /Users/me/work
-  origin (github) · Local changes: 1 added, 2 modified · synced 5m ago
+~/Repos/television/.television
+┌────────────┬─────────────────────────┐
+│ Connection │ github:owner/tv-state   │
+│ State      │ syncing                 │
+│ Last sync  │ 14s ago                 │
+└────────────┴─────────────────────────┘
 
+2 stashes
 ```
 
-**TTY colors:** On the banner line, `Background sync is on` is **green**; `·` and `watching 2 stashes` are **dim**. For each healthy stash, `●` is **green**; the stash title (e.g. `notes`) is default; the path on the next line is **dim**. On connection lines, `origin (github)` is default; `·` and the status phrase (`Up to date · synced 2m ago`, etc.) are **dim**.
+The per-stash table is rendered with `cli-table3`. Rows that are absent (no message, no pending changes) are omitted from the table. The `Message` row carries either the latest sync `summary` (e.g. `synced 3 modified`) or an `error` string — error wins when both are present.
 
-When background sync is off:
+Color in the table: row labels (left column) muted grey, values default — except the URI in the `Connection` row which is cyan, the `State` value when it's `error` which is red, and the `Message` value which is red when sourced from `error` (default fg when sourced from `summary`).
+
+If a stash's path no longer exists, the table is replaced with a one-line warning:
 
 ```text
-Background sync is off
-Run `stash start` to resume syncing 2 stashes
-
+~/Old/Folder (path missing)
+Run: stash relink ~/Old/Folder <new-path>
 ```
 
-**TTY:** first line **red**; second line **dim**.
+Color: path default; `(path missing)` yellow; the `Run:` hint line entirely muted grey.
 
-When the platform does not support background sync:
+Output (no stashes registered):
 
 ```text
-Background sync is not supported on this platform
+Daemon: running
 
+No stashes registered. Run `stash connect <path> <uri>` to add one (e.g. `stash connect . github:owner/repo`).
 ```
 
-**TTY:** entire line **red**.
+The `Daemon:` line is colored — `running` green, `stopped` yellow, `unsupported` yellow, `error` red — when stdout is a TTY.
 
-When no stashes are registered:
+### `stash start`
+
+Installs and starts the background sync daemon as a system service (launchd on macOS, systemd on Linux).
+
+Output:
 
 ```text
-No stashes connected yet — run `stash connect <provider> <name>` in a directory to get started
+Daemon installed and running
 ```
 
-**TTY:** default foreground.
+Color: `running` green; the rest default.
 
-When the daemon reported an error for a stash (example):
+Output on unsupported platforms, to **stderr**, exit 1:
 
 ```text
-✗ notes
-  /Users/me/notes
-  origin (github) · rate limited
+Error: This platform does not support background services yet.
 ```
 
-**TTY:** `✗` **red**; title default; path **dim**; `origin (github)` default; `·` **dim**; error text **red**.
+### `stash stop`
 
-### Hidden: `stash daemon`
+Stops and uninstalls the background sync daemon.
 
-Hidden daemon entrypoint used by the OS service.
-
-- loads the global background registry
-- starts a headless watcher per registered stash
-- hot-reloads when the global config changes
-- writes `.stash/status.json` and capped `.stash/sync.log` for each stash
-
-## Config Locations
-
-- Global config: `~/.stash/config.json` or `$XDG_CONFIG_HOME/stash/config.json`
-- Per-stash config: `.stash/config.json`
-
-Global config shape:
-
-```json
-{
-  "providers": {
-    "github": { "token": "ghp_..." }
-  },
-  "background": {
-    "stashes": ["/Users/me/notes"]
-  }
-}
-```
-
-## Output examples and TTY colors
-
-This section is the **canonical reference** for exact user-visible text and **TTY** color. When stdout/stderr is **not** a TTY (pipe, file, CI), stash prints the **same words and punctuation** but **omits ANSI color codes**.
-
-### How to read the examples
-
-- **stdout** / **stderr** are called out per case. Most errors go to **stderr** (including all structured `stash connect` validation errors).
-- **“Green / red / dim / yellow”** describe the ANSI foreground stash uses when the stream is a TTY (`createColors` in `src/ui/color.ts`).
-- **“Default”** means the terminal’s normal text color (stash does not wrap that segment in a color code).
-
-### Color roles (quick reference)
-
-| Color       | Typical use                                                                                                                                       |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Green**   | `✓`, healthy `●`, positive service lines (`Background sync is on`, `Background sync is already running`), synced summary in watch                 |
-| **Red**     | `✗`, service “off / not running / unsupported”, daemon error text in `stash status`, **first line** of structured `stash connect` errors          |
-| **Dim**     | Paths, hints, `·` separators, countdowns, **continuation lines** after a red `connect` error, git-warning bullets, second lines of `start`/`stop` |
-| **Yellow**  | Spinner frame characters `◐ ◓ ◑ ◒`; the `Warning:` prefix on git safety                                                                           |
-| **Default** | Plain sentences such as `Connected origin.`, `Disconnected origin.`, `stash sync`’s `sync failed:` tail                                           |
-
-### `stash connect` — validation errors (stderr)
-
-Emitted **before** any connect prompts when the command cannot succeed.
-
-**Duplicate name** (name already in `.stash/config.json`):
+Output:
 
 ```text
-Connection already exists: origin
+Daemon stopped
 ```
 
-**TTY:** entire line **red** (via `CliDisplayError`). **Non-TTY:** same text, no codes.
-
-**Second connection name** (e.g. `stash connect github new` while `origin` already exists):
+Output if the daemon is not running, to **stderr**, exit 1:
 
 ```text
-This stash already has connection "origin" (only one is supported).
-Disconnect it before adding "new":
-  stash disconnect origin
+Error: Daemon is not running.
 ```
 
-**TTY:** line 1 **red**; lines 2–3 **dim**. No blank line between line 1 and line 2.
+### `stash daemon` (hidden)
 
-**Invalid multi-connection config** (more than one key under `connections` in `.stash/config.json`):
+Runs the background daemon in the foreground. Used internally by the system service; not normally invoked by users. Hidden from `--help`.
 
-```text
-This stash has more than one connection in .stash/config.json (only one is supported).
-Remove extra entries or run:
-  stash disconnect --all
-Then connect again.
-```
+## Provider config schema
 
-**TTY:** line 1 **red**; lines 2–4 **dim**.
+Each provider class declares a `static configSchema: ConfigItem[]`. Each item has:
 
-### Git safety warning on `connect` (stdout)
+- `name` — the field key (used for both the CLI flag `--<name>` and the prompt label fallback).
+- `label` — the human-friendly prompt text.
+- `secret?` — if true, the prompt masks input (used for tokens).
+- `global?` — if true, the field is provider-level (stored in `~/.stash/config.json`); if false (or omitted), it's per-connection (sourced from the URI).
 
-After `Connected <name>.` when `.git` exists and `allow-git` is not `true`:
+`stash setup` collects only the `global: true` fields. `stash connect` collects any `global: true` fields that aren't already set, plus per-connection fields from the URI.
 
-```text
-Warning: This directory contains .git. Stash will not sync until you either:
-  - remove .git, or
-  - run `stash config set allow-git true` (see "Using stash with git" in the README)
-```
+GitHub provider:
 
-**TTY:** `Warning:` **yellow**; the rest of each line **dim**.
+| name  | label                        | secret | global |
+|-------|------------------------------|--------|--------|
+| token | Personal access token        | ✓      | ✓      |
+| id    | Identifier (e.g. owner/repo) |        |        |
 
-### `stash setup` (stdout)
+The `id` field is sourced from the URI: `github:owner/repo` parses to `{ provider: "github", config: { id: "owner/repo" } }`.
 
-```text
-Configured github.
-```
+## Errors and exit codes
 
-**TTY:** default foreground (no color codes for this line).
-
-### Other commands
-
-Success paths, `disconnect`, `config`, `sync`, `watch`, `status`, and `start`/`stop` edge cases are documented **with the same level of detail** under each command above; the **palette rules** here apply consistently.
-
-## UI Style
-
-The CLI output intentionally uses a compact, app-like style:
-
-- primary state lines use sentence case, for example `Background sync is on`
-- secondary context lines are short and actionable, for example `Run \`stash start\` to resume syncing 3 stashes`
-- transient spinner/live lines use **lowercase** status words in the spinner body, for example `checking...` and `syncing...` (spinner frames remain `◐◓◑◒`)
-- local and global status phrases are capitalized consistently: `Up to date`, `Local changes`, `Waiting for first sync`, `Directory not found`
-- counts should pluralize naturally, for example `Watching 1 stash` and `Watching 3 stashes`
-- color is part of the UI contract in TTY mode — see [Output examples and TTY colors](#output-examples-and-tty-colors) for exact strings and segment-by-segment color
-
-These presentation details are intentional behavior, not incidental formatting.
-
-## Scope
-
-The CLI owns:
-
-- prompting
-- command parsing
-- output rendering
-- watch orchestration
-- global config file I/O
-- background service lifecycle commands
-
-The CLI does not own sync logic or reconciliation rules; those live in `Stash`.
+- Successful commands exit with code 0; their output goes to **stdout**.
+- Any error exits with code 1; the message goes to **stderr** with an `Error:` prefix.
+- Errors do not produce partial state. If a command fails before its mutation step, no files have been written. Mutations under the registry lock (`connect`, `disconnect`, `relink`) are atomic — either the `stash.json` write succeeds in full or the operation aborts.

@@ -19,14 +19,17 @@ import { dirname, join, relative } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Emitter } from "./emitter.ts";
 import {
-  GitRepoError,
   MultipleConnectionsError,
   PushConflictError,
   SyncLockError,
 } from "./errors.ts";
-import { normalizeGlobalConfig } from "./global-config.ts";
-import { getLocalConfigPath, readLocalConfig, writeLocalConfig } from "./local-config.ts";
-import { ensureMigration } from "./migrations.ts";
+import {
+  ensureStashDirPath,
+  getStashDirPath,
+  getStashRecordPath,
+  getStashPath,
+  normalizeGlobalConfig,
+} from "./global-config.ts";
 import { providers as defaultProviders } from "./providers/index.ts";
 import type {
   ChangeSet,
@@ -38,11 +41,14 @@ import type {
   ProviderClass,
   PushPayload,
   SnapshotEntry,
+  StashRecord,
   StatusResult,
 } from "./types.ts";
 import { hashBuffer, hashText } from "./utils/hash.ts";
+import { writeJsonFile } from "./utils/fs.ts";
 import { isTrackedPath } from "./utils/is-tracked-path.ts";
 import { isValidText } from "./utils/text.ts";
+import { ulid } from "./utils/ulid.ts";
 
 export type StashEvents = {
   mutation: FileMutation;
@@ -50,6 +56,7 @@ export type StashEvents = {
 
 type StashOptions = {
   providers?: Record<string, ProviderClass>;
+  stashPath?: string;
 };
 
 function cloneSnapshot(snapshot: Record<string, SnapshotEntry>): Record<string, SnapshotEntry> {
@@ -65,60 +72,70 @@ const SYNC_RETRY_LIMIT = 5;
 const NON_FILE_HASH = "__non-file__";
 
 export class Stash extends Emitter<StashEvents> {
+  readonly id: string;
+  readonly record: StashRecord;
   private readonly dir: string;
+  private readonly metadataDir: string;
+  private readonly stashPath: string;
   private readonly globalConfig: GlobalConfig;
   private readonly providerRegistry: Record<string, ProviderClass>;
   private _connections: Record<string, ConnectionConfig>;
   private syncInFlight = false;
 
   private constructor(
-    dir: string,
+    id: string,
+    record: StashRecord,
     globalConfig: GlobalConfig,
-    connections: Record<string, ConnectionConfig>,
     options?: StashOptions,
   ) {
     super();
-    this.dir = dir;
+    this.id = id;
+    this.record = {
+      path: record.path,
+      connections: record.connections.map((connection) => ({
+        provider: connection.provider,
+        config: { ...connection.config },
+      })),
+    };
+    this.dir = record.path;
+    this.stashPath = options?.stashPath ?? getStashPath();
+    this.metadataDir = getStashDirPath(id, this.stashPath);
     this.globalConfig = globalConfig;
-    this._connections = connections;
+    this._connections = this.connectionsFromRecord(this.record);
     this.providerRegistry = options?.providers ?? defaultProviders;
   }
 
-  static async load(
-    dir: string,
-    globalConfig: GlobalConfig,
-    options?: StashOptions,
-  ): Promise<Stash> {
-    const stashDir = join(dir, ".stash");
-    if (!existsSync(stashDir)) {
-      throw new Error(
-        "This directory is not a stash. Run `stash connect <provider> <name>` first.",
-      );
+  static async load(id: string, globalConfig: GlobalConfig, options?: StashOptions): Promise<Stash> {
+    const stashPath = options?.stashPath ?? getStashPath();
+    const directRecordPath = getStashRecordPath(id, stashPath);
+    if (existsSync(directRecordPath)) {
+      const record = JSON.parse(readFileSync(directRecordPath, "utf8")) as StashRecord;
+      return new Stash(id, record, normalizeGlobalConfig(globalConfig), options);
     }
-
-    await ensureMigration(dir);
-    const localConfig = await readLocalConfig(dir);
-    return new Stash(
-      dir,
-      normalizeGlobalConfig(globalConfig),
-      localConfig.connections ?? {},
-      options,
-    );
+    throw new Error(`Stash not found: ${id}`);
   }
 
-  static async init(
-    dir: string,
+  static async create(
+    record: StashRecord,
     globalConfig: GlobalConfig,
     options?: StashOptions,
   ): Promise<Stash> {
-    const stashDir = join(dir, ".stash");
-    mkdirSync(stashDir, { recursive: true });
-    await ensureMigration(dir);
-    mkdirSync(join(stashDir, "snapshot"), { recursive: true });
-    if (!existsSync(getLocalConfigPath(dir))) {
-      await writeLocalConfig(dir, { connections: {} });
-    }
-    return Stash.load(dir, globalConfig, options);
+    const id = ulid();
+    const stashPath = options?.stashPath ?? getStashPath();
+    const metadataDir = getStashDirPath(id, stashPath);
+    await ensureStashDirPath(id, stashPath);
+    await writeJsonFile(
+      getStashRecordPath(id, stashPath),
+      {
+        path: record.path,
+        connections: record.connections.map((connection) => ({
+          provider: connection.provider,
+          config: { ...connection.config },
+        })),
+      } satisfies StashRecord,
+    );
+    mkdirSync(join(metadataDir, "snapshot"), { recursive: true });
+    return new Stash(id, record, normalizeGlobalConfig(globalConfig), options);
   }
 
   get connections(): Record<string, ConnectionConfig> {
@@ -136,6 +153,32 @@ export class Stash extends Emitter<StashEvents> {
     return out;
   }
 
+  private connectionsFromRecord(record: StashRecord): Record<string, ConnectionConfig> {
+    const connections: Record<string, ConnectionConfig> = {};
+    for (const connection of record.connections) {
+      const name = connection.config.name ?? connection.provider;
+      const { name: _ignored, ...fields } = connection.config;
+      connections[name] = {
+        provider: connection.provider,
+        ...fields,
+      };
+    }
+    return connections;
+  }
+
+  private updateRecordConnections(): void {
+    this.record.connections = Object.entries(this._connections).map(([name, connection]) => {
+      const { provider, ...fields } = connection;
+      return {
+        provider,
+        config: {
+          name,
+          ...fields,
+        },
+      };
+    });
+  }
+
   async connect({ name, ...configFields }: { name: string } & ConnectionConfig): Promise<void> {
     const { provider, ...fields } = configFields;
     const existing = Object.keys(this._connections);
@@ -143,12 +186,12 @@ export class Stash extends Emitter<StashEvents> {
       throw new MultipleConnectionsError();
     }
     this._connections[name] = { provider, ...fields };
-    await this.persistLocalConfig();
+    await this.persistRecord();
   }
 
   async disconnect(name: string): Promise<void> {
     delete this._connections[name];
-    await this.persistLocalConfig();
+    await this.persistRecord();
   }
 
   async sync(): Promise<void> {
@@ -159,11 +202,6 @@ export class Stash extends Emitter<StashEvents> {
     this.syncInFlight = true;
 
     try {
-      const localConfig = await readLocalConfig(this.dir);
-      if (this.hasGitRepository() && localConfig["allow-git"] !== true) {
-        throw new GitRepoError();
-      }
-
       const connectionNames = Object.keys(this._connections);
       if (connectionNames.length === 0) {
         return;
@@ -793,12 +831,9 @@ export class Stash extends Emitter<StashEvents> {
     return readFileSync(snapshotPath, "utf8");
   }
 
-  private async persistLocalConfig(): Promise<void> {
-    const currentConfig = await readLocalConfig(this.dir);
-    await writeLocalConfig(this.dir, {
-      ...currentConfig,
-      connections: this._connections,
-    });
+  private async persistRecord(): Promise<void> {
+    this.updateRecordConnections();
+    await writeJsonFile(getStashRecordPath(this.id, this.stashPath), this.record);
   }
 
   private acquireSyncLock(): void {
@@ -930,18 +965,13 @@ export class Stash extends Emitter<StashEvents> {
   }
 
   private snapshotPath(): string {
-    return join(this.dir, ".stash", "snapshot.json");
+    return join(this.metadataDir, "snapshot.json");
   }
 
   private snapshotLocalDir(): string {
-    return join(this.dir, ".stash", "snapshot");
+    return join(this.metadataDir, "snapshot");
   }
-
-  private hasGitRepository(): boolean {
-    return existsSync(join(this.dir, ".git"));
-  }
-
   private syncLockPath(): string {
-    return join(this.dir, ".stash", "sync.lock");
+    return join(this.metadataDir, "sync.lock");
   }
 }

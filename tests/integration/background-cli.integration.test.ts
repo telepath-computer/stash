@@ -1,14 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
-import { UnsupportedPlatformError } from "@rupertsworld/daemon";
+import { join, resolve } from "node:path";
 import { main } from "../../src/cli-main.ts";
-import { Stash } from "../../src/stash.ts";
-import type { GlobalConfig } from "../../src/types.ts";
-import { assertMigration, writeLegacyLayout } from "../helpers/assert-migration.ts";
+import type { GlobalConfig, StashRecord } from "../../src/types.ts";
 
 type ServiceCalls = {
   install: number;
@@ -17,14 +14,47 @@ type ServiceCalls = {
 };
 
 type RunResult = {
+  exitCode: number;
   stdout: string;
   stderr: string;
   config: GlobalConfig;
+  configWrites: number;
   calls: ServiceCalls;
 };
 
+const ANSI_PATTERN = /\x1B\[[0-9;]*m/g;
+
 async function makeTempDir(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
+}
+
+function stripAnsi(text: string): string {
+  return text.replace(ANSI_PATTERN, "");
+}
+
+function getTestStashPath(dir: string): string {
+  return join(dir, ".xdg", "stash");
+}
+
+async function listStashIds(stashPath: string): Promise<string[]> {
+  if (!existsSync(stashPath)) {
+    return [];
+  }
+  return (await readdir(stashPath)).filter((entry) => !entry.startsWith(".") && entry !== "config.json");
+}
+
+async function readOnlyStashRecord(stashPath: string): Promise<{ id: string; record: StashRecord }> {
+  const ids = await listStashIds(stashPath);
+  assert.equal(ids.length, 1);
+  return {
+    id: ids[0],
+    record: JSON.parse(await readFile(join(stashPath, ids[0], "stash.json"), "utf8")) as StashRecord,
+  };
+}
+
+async function writeStashRecord(stashPath: string, id: string, record: StashRecord): Promise<void> {
+  await mkdir(join(stashPath, id), { recursive: true });
+  await writeFile(join(stashPath, id, "stash.json"), JSON.stringify(record, null, 2), "utf8");
 }
 
 async function runMain(
@@ -33,7 +63,6 @@ async function runMain(
   options?: {
     config?: GlobalConfig;
     serviceStatus?: { installed: boolean; running: boolean } | Error;
-    tty?: boolean;
   },
 ): Promise<RunResult> {
   let config: GlobalConfig = structuredClone(
@@ -46,16 +75,19 @@ async function runMain(
   );
   let stdout = "";
   let stderr = "";
+  let configWrites = 0;
   const calls: ServiceCalls = {
     install: 0,
     uninstall: 0,
     status: 0,
   };
 
-  await main(["node", "stash", ...args], {
+  const exitCode = await main(["node", "stash", ...args], {
     cwd: () => cwd,
+    stashPath: getTestStashPath(cwd),
     readGlobalConfig: async () => structuredClone(config),
     writeGlobalConfig: async (nextConfig) => {
+      configWrites += 1;
       config = structuredClone(nextConfig);
     },
     service: {
@@ -74,14 +106,14 @@ async function runMain(
       },
     },
     stdout: {
-      isTTY: options?.tty === true,
+      isTTY: false,
       write(chunk: string) {
         stdout += chunk;
         return true;
       },
     } as NodeJS.WriteStream,
     stderr: {
-      isTTY: options?.tty === true,
+      isTTY: false,
       write(chunk: string) {
         stderr += chunk;
         return true;
@@ -89,448 +121,210 @@ async function runMain(
     } as NodeJS.WriteStream,
   });
 
-  return { stdout, stderr, config, calls };
+  return { exitCode, stdout, stderr, config, configWrites, calls };
 }
 
-test("connect registers the current stash path in the background registry", async () => {
-  const dir = await makeTempDir("stash-cli-connect-register");
-
-  try {
-    const result = await runMain(dir, [
-      "connect",
-      "github",
-      "origin",
-      "--token",
-      "test-token",
-      "--repo",
-      "user/repo",
-    ]);
-    assert.deepEqual(result.config.background?.stashes, [resolve(dir)]);
-    assert.equal(result.stdout.includes("Connected origin."), true);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("connect defaults the connection name to the provider when omitted", async () => {
-  const dir = await makeTempDir("stash-cli-connect-default-name");
-
-  try {
-    const result = await runMain(dir, [
-      "connect",
-      "github",
-      "--token",
-      "test-token",
-      "--repo",
-      "user/repo",
-    ]);
-
-    assert.deepEqual(result.config.background?.stashes, [resolve(dir)]);
-    assert.equal(result.stdout.includes("Connected github."), true);
-    const localConfig = JSON.parse(await readFile(join(dir, ".stash", "config.json"), "utf8"));
-    assert.deepEqual(localConfig, {
-      connections: {
-        github: { provider: "github", repo: "user/repo" },
-      },
-    });
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("connect reports that the stash is now syncing when background sync is already running", async () => {
-  const dir = await makeTempDir("stash-cli-connect-running");
+test("connect creates a new stash record and stores provider globals separately", async () => {
+  const dir = await makeTempDir("stash-cli-connect");
 
   try {
     const result = await runMain(
       dir,
-      ["connect", "github", "origin", "--token", "test-token", "--repo", "user/repo"],
+      ["connect", ".", "github:user/repo", "--token", "test-token"],
       {
         serviceStatus: { installed: true, running: true },
       },
     );
 
-    assert.equal(result.stdout.includes("Connected origin."), true);
-    assert.equal(result.stdout.includes("Background sync is on"), true);
-    assert.equal(result.stdout.includes("This stash is now syncing automatically"), true);
+    const stdout = stripAnsi(result.stdout);
+    assert.equal(result.exitCode, 0);
+    assert.equal(stdout.includes("Connected"), true);
+    assert.equal(stdout.includes("github:user/repo"), true);
+    assert.equal(stdout.includes(await realpath(dir)), true);
+    assert.equal(stdout.includes("Background sync is on. Run `stash status` to check."), true);
+    assert.equal(result.config.providers.github?.token, "test-token");
+    assert.equal(existsSync(join(dir, ".stash")), false);
+
+    const { record } = await readOnlyStashRecord(getTestStashPath(dir));
+    assert.deepEqual(record, {
+      path: await realpath(dir),
+      connections: [{ provider: "github", config: { id: "user/repo" } }],
+    });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("connect warns when git repository syncing is still blocked", async () => {
-  const dir = await makeTempDir("stash-cli-connect-git-warning");
+test("connect is idempotent for the same uri", async () => {
+  const dir = await makeTempDir("stash-cli-connect-idempotent");
+
+  try {
+    const first = await runMain(dir, ["connect", ".", "github:user/repo", "--token", "test-token"]);
+    const second = await runMain(dir, ["connect", ".", "github:user/repo"], {
+      config: first.config,
+    });
+
+    const stdout = stripAnsi(second.stdout);
+    assert.equal(second.exitCode, 0);
+    assert.equal(stdout.includes("Already connected"), true);
+    assert.equal(stdout.includes("github:user/repo"), true);
+    assert.deepEqual(await listStashIds(getTestStashPath(dir)), [(
+      await readOnlyStashRecord(getTestStashPath(dir))
+    ).id]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("connect skips rewriting global config when provider globals are unchanged", async () => {
+  const dir = await makeTempDir("stash-cli-connect-global-unchanged");
+
+  try {
+    const result = await runMain(dir, ["connect", ".", "github:user/repo"], {
+      config: {
+        providers: {
+          github: { token: "test-token" },
+        },
+        background: {
+          stashes: [],
+        },
+      },
+    });
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.configWrites, 0);
+    assert.deepEqual(result.config.providers.github, { token: "test-token" });
+    const { record } = await readOnlyStashRecord(getTestStashPath(dir));
+    assert.deepEqual(record.connections, [{ provider: "github", config: { id: "user/repo" } }]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("connect blocks git repositories unless --dangerously-allow-git is passed", async () => {
+  const dir = await makeTempDir("stash-cli-connect-git");
 
   try {
     await mkdir(join(dir, ".git"), { recursive: true });
 
-    const result = await runMain(dir, [
-      "connect",
-      "github",
-      "origin",
-      "--token",
-      "test-token",
-      "--repo",
-      "user/repo",
-    ]);
+    const result = await runMain(dir, ["connect", ".", "github:user/repo", "--token", "test-token"]);
 
-    assert.equal(result.stdout.includes("Connected origin."), true);
-    assert.equal(result.stdout.includes("Warning:"), true);
-    assert.equal(result.stdout.includes("remove .git"), true);
-    assert.equal(result.stdout.includes("stash config set allow-git true"), true);
+    const stderr = stripAnsi(result.stderr);
+    assert.equal(result.exitCode, 1);
+    assert.equal(stderr.includes("Error:"), true);
+    assert.equal(stderr.includes("is a git repository"), true);
+    assert.equal(stderr.includes("--dangerously-allow-git"), true);
+    assert.equal(stripAnsi(result.stdout).includes("Background sync is on"), false);
+    assert.deepEqual(await listStashIds(getTestStashPath(dir)), []);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("connecting a second named connection is rejected", async () => {
-  const dir = await makeTempDir("stash-cli-connect-multi");
+test("disconnect tombstones the last connection without deleting the stash dir", async () => {
+  const dir = await makeTempDir("stash-cli-disconnect");
 
   try {
-    const first = await runMain(dir, [
-      "connect",
-      "github",
-      "origin",
-      "--token",
-      "test-token",
-      "--repo",
-      "user/repo",
-    ]);
-    const error = await runMain(
+    const connected = await runMain(dir, ["connect", ".", "github:user/repo", "--token", "test-token"]);
+    const { id } = await readOnlyStashRecord(getTestStashPath(dir));
+
+    const result = await runMain(dir, ["disconnect", "."], {
+      config: connected.config,
+    });
+
+    const stdout = stripAnsi(result.stdout);
+    assert.equal(result.exitCode, 0);
+    assert.equal(stdout.includes("Disconnected"), true);
+    assert.equal(stdout.includes("github:user/repo"), true);
+    assert.equal(stdout.includes(await realpath(dir)), true);
+    assert.equal(existsSync(join(getTestStashPath(dir), id)), true);
+    const record = JSON.parse(
+      await readFile(join(getTestStashPath(dir), id, "stash.json"), "utf8"),
+    ) as StashRecord;
+    assert.deepEqual(record.connections, []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("relink rewrites stash.json.path and enforces the git gate on the new path", async () => {
+  const dir = await makeTempDir("stash-cli-relink-old");
+  const moved = await makeTempDir("stash-cli-relink-new");
+
+  try {
+    const connected = await runMain(dir, ["connect", ".", "github:user/repo", "--token", "test-token"]);
+    const { id } = await readOnlyStashRecord(getTestStashPath(dir));
+
+    await mkdir(join(moved, ".git"), { recursive: true });
+    const error = await runMain(dir, ["relink", dir, moved], { config: connected.config });
+    const errorStderr = stripAnsi(error.stderr);
+    assert.equal(error.exitCode, 1);
+    assert.equal(errorStderr.includes("Error:"), true);
+    assert.equal(errorStderr.includes("is a git repository"), true);
+    assert.equal(errorStderr.includes("--dangerously-allow-git"), true);
+
+    const result = await runMain(
       dir,
-      ["connect", "github", "backup", "--token", "test-token", "--repo", "user/other"],
-      {
-        config: first.config,
-      },
-    ).catch((e: Error) => e);
-    assert.ok(error instanceof Error);
-    assert.equal(error.message.includes('already has connection "origin"'), true);
-    assert.equal(error.message.includes("stash disconnect origin"), true);
+      ["relink", dir, moved, "--dangerously-allow-git"],
+      { config: connected.config },
+    );
+
+    const stdout = stripAnsi(result.stdout);
+    assert.equal(result.exitCode, 0);
+    assert.equal(stdout.includes("Relinked"), true);
+    assert.equal(stdout.includes(await realpath(dir)), true);
+    assert.equal(stdout.includes(await realpath(moved)), true);
+    assert.equal(stdout.includes("→"), true);
+    const record = JSON.parse(
+      await readFile(join(getTestStashPath(dir), id, "stash.json"), "utf8"),
+    ) as StashRecord;
+    assert.equal(record.path, await realpath(moved));
   } finally {
     await rm(dir, { recursive: true, force: true });
+    await rm(moved, { recursive: true, force: true });
   }
 });
 
-test("disconnect keeps the stash registered while other providers remain", async () => {
-  const dir = await makeTempDir("stash-cli-disconnect-keep");
+test("status prints daemon state, connection URIs, and missing-path guidance", async () => {
+  const dir = await makeTempDir("stash-cli-status");
+  const missing = join(dir, "missing-folder");
+  const stashPath = getTestStashPath(dir);
 
   try {
-    await Stash.init(dir, {
-      providers: {},
-      background: { stashes: [resolve(dir)] },
+    await writeStashRecord(stashPath, "live-stash", {
+      path: resolve(dir),
+      connections: [{ provider: "github", config: { id: "user/live" } }],
+    });
+    await writeStashRecord(stashPath, "missing-stash", {
+      path: resolve(missing),
+      connections: [{ provider: "github", config: { id: "user/missing" } }],
     });
     await writeFile(
-      join(dir, ".stash", "config.json"),
+      join(stashPath, "live-stash", "status.json"),
       JSON.stringify(
         {
-          connections: {
-            origin: { provider: "github", repo: "user/repo" },
-            backup: { provider: "fake", repo: "other/repo" },
-          },
-        },
-        null,
-        2,
-      ),
-      "utf8",
-    );
-
-    const result = await runMain(dir, ["disconnect", "origin"], {
-      config: {
-        providers: {},
-        background: { stashes: [resolve(dir)] },
-      },
-    });
-
-    assert.deepEqual(result.config.background?.stashes, [resolve(dir)]);
-    const localConfig = JSON.parse(await readFile(join(dir, ".stash", "config.json"), "utf8"));
-    assert.deepEqual(localConfig, {
-      connections: {
-        backup: { provider: "fake", repo: "other/repo" },
-      },
-    });
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("disconnect --all disconnects the stash completely", async () => {
-  const dir = await makeTempDir("stash-cli-disconnect-all");
-
-  try {
-    const connected = await runMain(dir, [
-      "connect",
-      "github",
-      "origin",
-      "--token",
-      "test-token",
-      "--repo",
-      "user/repo",
-    ]);
-    const disconnected = await runMain(dir, ["disconnect", "--all"], {
-      config: connected.config,
-    });
-
-    assert.deepEqual(disconnected.config.background?.stashes, []);
-    assert.equal(existsSync(join(dir, ".stash")), false);
-    assert.equal(disconnected.stdout.includes("Disconnected stash."), true);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("disconnect with no arguments errors with actionable guidance", async () => {
-  const dir = await makeTempDir("stash-cli-disconnect-missing");
-
-  try {
-    const result = await main(["node", "stash", "disconnect"], {
-      cwd: () => dir,
-      readGlobalConfig: async () => ({ providers: {}, background: { stashes: [] } }),
-      writeGlobalConfig: async () => {},
-      service: {
-        install: async () => {},
-        uninstall: async () => {},
-        status: async () => ({ installed: false, running: false }),
-      },
-      stdout: {
-        isTTY: false,
-        write() {
-          return true;
-        },
-      } as NodeJS.WriteStream,
-      stderr: {
-        isTTY: false,
-        write() {
-          return true;
-        },
-      } as NodeJS.WriteStream,
-    }).catch((error) => error as Error);
-
-    assert.equal(result instanceof Error, true);
-    assert.equal(
-      (result as Error).message,
-      "argument required — run `stash disconnect <name>`, `stash disconnect --all`, or `stash disconnect --path <path>`",
-    );
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("disconnect removes .stash and unregisters when it was the last connection", async () => {
-  const dir = await makeTempDir("stash-cli-disconnect-remove");
-
-  try {
-    const connected = await runMain(dir, [
-      "connect",
-      "github",
-      "origin",
-      "--token",
-      "test-token",
-      "--repo",
-      "user/repo",
-    ]);
-    const disconnected = await runMain(dir, ["disconnect", "origin"], {
-      config: connected.config,
-    });
-
-    assert.deepEqual(disconnected.config.background?.stashes, []);
-    assert.equal(existsSync(join(dir, ".stash")), false);
-    assert.equal(disconnected.stdout.includes("Disconnected origin."), true);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("disconnect --path deregisters the path and removes .stash when the directory exists", async () => {
-  const dir = await makeTempDir("stash-cli-disconnect-path");
-
-  try {
-    await Stash.init(dir, { providers: {}, background: { stashes: [resolve(dir)] } });
-
-    const result = await runMain(dir, ["disconnect", "--path", dir], {
-      config: {
-        providers: {},
-        background: { stashes: [resolve(dir)] },
-      },
-    });
-
-    assert.deepEqual(result.config.background?.stashes, []);
-    assert.equal(existsSync(join(dir, ".stash")), false);
-    assert.equal(result.stdout.includes("Disconnected stash."), true);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("disconnect --path no-ops cleanly when the path is not registered", async () => {
-  const dir = await makeTempDir("stash-cli-disconnect-path-missing");
-  const missing = join(dir, "missing-stash");
-
-  try {
-    const result = await runMain(dir, ["disconnect", "--path", missing], {
-      config: {
-        providers: {},
-        background: { stashes: [resolve(dir)] },
-      },
-    });
-
-    assert.deepEqual(result.config.background?.stashes, [resolve(dir)]);
-    assert.equal(result.stdout.includes("No stash registered at that path."), true);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("disconnect errors when the named connection does not exist", async () => {
-  const dir = await makeTempDir("stash-cli-disconnect-missing-name");
-
-  try {
-    await Stash.init(dir, { providers: {}, background: { stashes: [resolve(dir)] } });
-    await writeFile(
-      join(dir, ".stash", "config.json"),
-      JSON.stringify(
-        {
-          connections: {
-            origin: { provider: "github", repo: "user/repo" },
-          },
-        },
-        null,
-        2,
-      ),
-      "utf8",
-    );
-
-    const result = await main(["node", "stash", "disconnect", "backup"], {
-      cwd: () => dir,
-      readGlobalConfig: async () => ({ providers: {}, background: { stashes: [resolve(dir)] } }),
-      writeGlobalConfig: async () => {},
-      service: {
-        install: async () => {},
-        uninstall: async () => {},
-        status: async () => ({ installed: false, running: false }),
-      },
-      stdout: {
-        isTTY: false,
-        write() {
-          return true;
-        },
-      } as NodeJS.WriteStream,
-      stderr: {
-        isTTY: false,
-        write() {
-          return true;
-        },
-      } as NodeJS.WriteStream,
-    }).catch((error) => error as Error);
-
-    assert.equal(result instanceof Error, true);
-    assert.equal((result as Error).message, "Connection not found: backup");
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("disconnect flags are mutually exclusive", async () => {
-  const dir = await makeTempDir("stash-cli-disconnect-exclusive");
-
-  try {
-    const result = await main(["node", "stash", "disconnect", "origin", "--all"], {
-      cwd: () => dir,
-      readGlobalConfig: async () => ({ providers: {}, background: { stashes: [] } }),
-      writeGlobalConfig: async () => {},
-      service: {
-        install: async () => {},
-        uninstall: async () => {},
-        status: async () => ({ installed: false, running: false }),
-      },
-      stdout: {
-        isTTY: false,
-        write() {
-          return true;
-        },
-      } as NodeJS.WriteStream,
-      stderr: {
-        isTTY: false,
-        write() {
-          return true;
-        },
-      } as NodeJS.WriteStream,
-    }).catch((error) => error as Error);
-
-    assert.equal(result instanceof Error, true);
-    assert.equal(
-      (result as Error).message,
-      "disconnect modes are mutually exclusive — use only one of `<name>`, `--all`, or `--path <path>`",
-    );
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("start delegates to install and reports the service is on", async () => {
-  const dir = await makeTempDir("stash-cli-start");
-
-  try {
-    const result = await runMain(dir, ["start"], {
-      config: {
-        providers: {},
-        background: { stashes: ["/a", "/b", "/c"] },
-      },
-    });
-
-    assert.equal(result.calls.install, 1);
-    assert.equal(result.stdout.includes("Background sync is on"), true);
-    assert.equal(result.stdout.includes("Watching 3 stashes"), true);
-    assert.equal(result.stdout.includes("starts on startup"), true);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("stop delegates to uninstall and reports how to resume syncing", async () => {
-  const dir = await makeTempDir("stash-cli-stop");
-
-  try {
-    const result = await runMain(dir, ["stop"], {
-      config: {
-        providers: {},
-        background: { stashes: ["/a", "/b", "/c"] },
-      },
-      serviceStatus: { installed: true, running: true },
-    });
-
-    assert.equal(result.calls.uninstall, 1);
-    assert.equal(result.stdout.includes("Background sync is off"), true);
-    assert.equal(result.stdout.includes("Run `stash start` to resume syncing 3 stashes"), true);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("status prints unsupported-platform state and per-stash summaries", async () => {
-  const dir = await makeTempDir("stash-cli-status-all");
-
-  try {
-    await Stash.init(dir, { providers: {}, background: { stashes: [] } });
-    await writeFile(
-      join(dir, ".stash", "config.json"),
-      JSON.stringify(
-        {
-          connections: {
-            origin: { provider: "github", repo: "user/repo" },
-          },
-        },
-        null,
-        2,
-      ),
-      "utf8",
-    );
-    await writeFile(
-      join(dir, ".stash", "status.json"),
-      JSON.stringify(
-        {
-          kind: "synced",
+          kind: "idle",
           lastSync: "2026-03-11T14:30:00.000Z",
-          summary: "1↑ 2↓",
+          summary: "1 modified",
+          error: null,
+          pendingChanges: {
+            modified: 1,
+            added: 0,
+            deleted: 0,
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    await writeFile(
+      join(stashPath, "missing-stash", "status.json"),
+      JSON.stringify(
+        {
+          kind: "missing",
+          lastSync: null,
+          summary: null,
           error: null,
         },
         null,
@@ -538,55 +332,64 @@ test("status prints unsupported-platform state and per-stash summaries", async (
       ),
       "utf8",
     );
-    await writeFile(join(dir, ".stash", "snapshot.json"), JSON.stringify({}, null, 2), "utf8");
 
     const result = await runMain(dir, ["status"], {
-      config: {
-        providers: {},
-        background: {
-          stashes: [dir],
-        },
-      },
-      serviceStatus: new UnsupportedPlatformError(),
+      serviceStatus: { installed: true, running: true },
     });
 
-    assert.equal(result.stdout.includes("not supported on this platform"), true);
-    assert.equal(result.stdout.includes(basename(dir)), true);
-    assert.equal(result.stdout.includes(dir), true);
-    assert.equal(result.stdout.includes("origin (github)"), true);
-    assert.equal(result.stdout.includes("user/repo"), false);
-    assert.equal(result.stdout.includes("Up to date"), true);
+    const stdout = stripAnsi(result.stdout);
+    assert.equal(result.exitCode, 0);
+    assert.equal(stdout.includes("Daemon: running"), true);
+    assert.equal(stdout.includes(resolve(dir)), true);
+    assert.equal(stdout.includes("github:user/live"), true);
+    assert.equal(stdout.includes("Connection"), true);
+    assert.equal(stdout.includes("State"), true);
+    assert.equal(stdout.includes("Pending"), true);
+    assert.equal(stdout.includes("1 modified"), true);
+    assert.equal(stdout.includes(`${resolve(missing)} (path missing)`), true);
+    assert.equal(stdout.includes(`Run: stash relink ${resolve(missing)} <new-path>`), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("status shows the git safety error message", async () => {
-  const dir = await makeTempDir("stash-cli-status-all-git-error");
+test("status shows daemon state and empty hint when no stashes are registered", async () => {
+  const dir = await makeTempDir("stash-cli-status-empty");
 
   try {
-    await Stash.init(dir, { providers: {}, background: { stashes: [] } });
-    await writeFile(
-      join(dir, ".stash", "config.json"),
-      JSON.stringify(
-        {
-          connections: {
-            origin: { provider: "github", repo: "user/repo" },
-          },
-        },
-        null,
-        2,
-      ),
-      "utf8",
+    const result = await runMain(dir, ["status"], {
+      serviceStatus: { installed: false, running: false },
+    });
+
+    const stdout = stripAnsi(result.stdout);
+    assert.equal(result.exitCode, 0);
+    assert.equal(stdout.includes("Daemon: stopped"), true);
+    assert.equal(
+      stdout.includes("No stashes registered. Run `stash connect <path> <uri>` to add one"),
+      true,
     );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("status renders the error state row and last error details for errored stashes", async () => {
+  const dir = await makeTempDir("stash-cli-status-error");
+  const stashPath = getTestStashPath(dir);
+
+  try {
+    await writeStashRecord(stashPath, "errored-stash", {
+      path: resolve(dir),
+      connections: [{ provider: "github", config: { id: "user/error" } }],
+    });
     await writeFile(
-      join(dir, ".stash", "status.json"),
+      join(stashPath, "errored-stash", "status.json"),
       JSON.stringify(
         {
           kind: "error",
-          lastSync: null,
+          lastSync: "2026-03-11T14:30:00.000Z",
           summary: null,
-          error: "git repository detected — run `stash config set allow-git true` to allow syncing",
+          error: "rate limit resets in 43s",
         },
         null,
         2,
@@ -595,256 +398,50 @@ test("status shows the git safety error message", async () => {
     );
 
     const result = await runMain(dir, ["status"], {
-      config: {
-        providers: {},
-        background: {
-          stashes: [dir],
-        },
-      },
-      serviceStatus: new UnsupportedPlatformError(),
-    });
-
-    assert.equal(result.stdout.includes("git repository detected"), true);
-    assert.equal(result.stdout.includes("stash config set allow-git true"), true);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("status shows the current stash when background sync is running", async () => {
-  const dir = await makeTempDir("stash-cli-status-local");
-
-  try {
-    await Stash.init(dir, { providers: {}, background: { stashes: [resolve(dir)] } });
-    await writeFile(
-      join(dir, ".stash", "config.json"),
-      JSON.stringify(
-        {
-          connections: {
-            origin: { provider: "github", repo: "user/repo" },
-          },
-        },
-        null,
-        2,
-      ),
-      "utf8",
-    );
-    await writeFile(join(dir, ".stash", "snapshot.json"), JSON.stringify({}, null, 2), "utf8");
-
-    const result = await runMain(dir, ["status"], {
-      config: {
-        providers: {},
-        background: { stashes: [resolve(dir)] },
-      },
       serviceStatus: { installed: true, running: true },
     });
 
-    assert.equal(result.stdout.includes("origin (github)"), true);
-    assert.equal(result.stdout.includes("user/repo"), false);
-    assert.equal(result.stdout.includes("Background sync is on"), true);
+    const stdout = stripAnsi(result.stdout);
+    assert.equal(result.exitCode, 0);
+    assert.match(stdout, /State[\s\S]*error[\s\S]*Message/);
+    assert.equal(stdout.includes("Message"), true);
+    assert.equal(stdout.includes("rate limit resets in 43s"), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("status shows waiting for first sync when no snapshot exists", async () => {
-  const dir = await makeTempDir("stash-cli-status-waiting");
+test("error output is plain stderr with an Error prefix", async () => {
+  const dir = await makeTempDir("stash-cli-error-shape");
 
   try {
-    await Stash.init(dir, { providers: {}, background: { stashes: [] } });
-    await writeFile(
-      join(dir, ".stash", "config.json"),
-      JSON.stringify(
-        {
-          connections: {
-            origin: { provider: "github", repo: "user/repo" },
-          },
-        },
-        null,
-        2,
-      ),
-      "utf8",
-    );
+    const result = await runMain(dir, ["disconnect", "."]);
 
-    const result = await runMain(dir, ["status"], {
-      config: {
-        providers: {},
-        background: { stashes: [resolve(dir)] },
-      },
-      tty: true,
-    });
-
-    assert.equal(result.stdout.includes("origin (github)"), true);
-    assert.equal(result.stdout.includes("Waiting for first sync"), true);
+    const stderr = stripAnsi(result.stderr);
+    assert.equal(result.exitCode, 1);
+    assert.equal(stderr.includes("Error: No stash found at"), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("status outside a stash shows no stashes connected", async () => {
-  const dir = await makeTempDir("stash-cli-status-outside");
+test("start and stop delegate to the service and use the new daemon messaging", async () => {
+  const dir = await makeTempDir("stash-cli-service");
 
   try {
-    const result = await runMain(dir, ["status"], {
-      config: { providers: {}, background: { stashes: [] } },
-      serviceStatus: { installed: false, running: false },
-    });
+    const started = await runMain(dir, ["start"]);
+    const startedStdout = stripAnsi(started.stdout);
+    assert.equal(started.exitCode, 0);
+    assert.equal(started.calls.install, 1);
+    assert.equal(startedStdout.includes("Daemon installed and running"), true);
 
-    assert.equal(result.stdout.includes("No stashes connected yet"), true);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("migration stops the running daemon before migrating and restarts it after", async () => {
-  const dir = await makeTempDir("stash-cli-migrate-bounce");
-
-  try {
-    await writeLegacyLayout(dir, {
-      connections: { github: { repo: "user/repo" } },
-      snapshotLocal: { "note.md": "base" },
-    });
-
-    const result = await runMain(dir, ["status"], {
-      config: {
-        providers: {},
-        background: { stashes: [resolve(dir)] },
-      },
+    const stopped = await runMain(dir, ["stop"], {
       serviceStatus: { installed: true, running: true },
     });
-
-    assert.equal(result.calls.uninstall, 1, "daemon should be stopped before migration");
-    assert.equal(result.calls.install, 1, "daemon should be restarted after migration");
-    await assertMigration(dir, {
-      connections: { github: { provider: "github", repo: "user/repo" } },
-      snapshotLocal: { "note.md": "base" },
-    });
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("migration does not bounce the daemon when it is not running", async () => {
-  const dir = await makeTempDir("stash-cli-migrate-no-bounce");
-
-  try {
-    await writeLegacyLayout(dir, {
-      connections: { github: { repo: "user/repo" } },
-    });
-
-    const result = await runMain(dir, ["status"], {
-      config: {
-        providers: {},
-        background: { stashes: [resolve(dir)] },
-      },
-      serviceStatus: { installed: false, running: false },
-    });
-
-    assert.equal(result.calls.uninstall, 0, "daemon should not be stopped when not running");
-    assert.equal(result.calls.install, 0, "daemon should not be installed when it was not running");
-    await assertMigration(dir, {
-      connections: { github: { provider: "github", repo: "user/repo" } },
-    });
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("migration bounces daemon for status when a background stash needs migration", async () => {
-  const dir = await makeTempDir("stash-cli-migrate-status-all");
-
-  try {
-    await writeLegacyLayout(dir, {
-      connections: { github: { repo: "user/repo" } },
-      snapshotLocal: { "note.md": "base" },
-    });
-    await writeFile(join(dir, ".stash", "snapshot.json"), JSON.stringify({}, null, 2), "utf8");
-
-    const result = await runMain(dir, ["status"], {
-      config: {
-        providers: {},
-        background: { stashes: [dir] },
-      },
-      serviceStatus: { installed: true, running: true },
-    });
-
-    assert.equal(result.calls.uninstall, 1, "daemon should be stopped before migration");
-    assert.equal(result.calls.install, 1, "daemon should be restarted after migration");
-    await assertMigration(dir, {
-      connections: { github: { provider: "github", repo: "user/repo" } },
-      snapshotLocal: { "note.md": "base" },
-    });
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("migration does not restart daemon after stash stop", async () => {
-  const dir = await makeTempDir("stash-cli-migrate-stop");
-
-  try {
-    await writeLegacyLayout(dir, {
-      connections: { github: { repo: "user/repo" } },
-    });
-
-    const result = await runMain(dir, ["stop"], {
-      config: {
-        providers: {},
-        background: { stashes: [resolve(dir)] },
-      },
-      serviceStatus: { installed: true, running: true },
-    });
-
-    assert.equal(result.calls.uninstall >= 1, true, "daemon should be stopped");
-    assert.equal(result.calls.install, 0, "daemon should not be restarted after stop command");
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("status prints background sync line above provider connections with a blank line gap", async () => {
-  const dir = await makeTempDir("stash-cli-status-layout");
-
-  try {
-    await Stash.init(dir, { providers: {}, background: { stashes: [resolve(dir)] } });
-    await writeFile(
-      join(dir, ".stash", "config.json"),
-      JSON.stringify(
-        {
-          connections: {
-            origin: { provider: "github", repo: "user/repo" },
-          },
-        },
-        null,
-        2,
-      ),
-      "utf8",
-    );
-    await writeFile(join(dir, ".stash", "snapshot.json"), JSON.stringify({}, null, 2), "utf8");
-
-    const result = await runMain(dir, ["status"], {
-      config: {
-        providers: {},
-        background: { stashes: [resolve(dir)] },
-      },
-      serviceStatus: { installed: true, running: true },
-    });
-
-    const lines = result.stdout.split("\n");
-    const bgLine = lines.findIndex((line) => line.includes("Background sync is on"));
-    const providerLine = lines.findIndex((line) => line.includes("origin (github)"));
-    assert.notEqual(bgLine, -1, "should contain background sync line");
-    assert.notEqual(providerLine, -1, "should contain provider line");
-    assert.equal(
-      bgLine < providerLine,
-      true,
-      "background sync line should appear before provider line",
-    );
-    assert.equal(
-      lines[bgLine + 1]?.trim(),
-      "",
-      "blank line should follow the background sync line",
-    );
+    const stoppedStdout = stripAnsi(stopped.stdout);
+    assert.equal(stopped.exitCode, 0);
+    assert.equal(stopped.calls.uninstall, 1);
+    assert.equal(stoppedStdout.includes("Daemon stopped"), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -1,113 +1,208 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { BackgroundDaemon } from "../../src/daemon.ts";
-import type { GlobalConfig } from "../../src/types.ts";
-import type { WatchStatus } from "../../src/watch.ts";
+import type { GlobalConfig, StashRecord } from "../../src/types.ts";
 
-type ConfigEvent = {
+type WatchEvent = {
   path: string;
   type: "create" | "update" | "delete";
 };
+
+type WatchCallback = (error: Error | null, events: WatchEvent[]) => void;
 
 async function makeTempDir(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
 }
 
-test("daemon: starts registered watches, writes status.json, and hot-reloads config changes", async () => {
-  const workspace = await makeTempDir("stash-daemon");
-  const stashA = join(workspace, "stash-a");
-  const stashB = join(workspace, "stash-b");
-  const configPath = join(workspace, "config.json");
+async function writeConfig(configPath: string, providers: GlobalConfig["providers"]): Promise<void> {
+  await mkdir(dirname(configPath), { recursive: true });
+  await writeFile(configPath, JSON.stringify({ providers }, null, 2), "utf8");
+}
+
+async function writeStashRecord(
+  stashPath: string,
+  id: string,
+  record: StashRecord,
+): Promise<void> {
+  await mkdir(join(stashPath, id), { recursive: true });
+  await writeFile(join(stashPath, id, "stash.json"), JSON.stringify(record, null, 2), "utf8");
+}
+
+async function waitFor(
+  check: () => boolean,
+  message: string,
+  timeoutMs = 500,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (check()) {
+      return;
+    }
+    await delay(10);
+  }
+  assert.fail(message);
+}
+
+test("daemon: reconciles registry entries, restarts on tuple changes, and stops removed stashes", async () => {
+  const workspace = await makeTempDir("stash-daemon-registry");
+  const stashPath = join(workspace, "stash");
+  const configPath = join(stashPath, "config.json");
+  const dirA = join(workspace, "dir-a");
+  const dirB = join(workspace, "dir-b");
+  let daemon: BackgroundDaemon | null = null;
   const started: string[] = [];
   const stopped: string[] = [];
   const logs: string[] = [];
-  const watchCallbacks = new Map<string, (status: WatchStatus) => Promise<void>>();
-  let config: GlobalConfig = {
-    providers: {},
-    background: {
-      stashes: [stashA],
-    },
-  };
-  let onConfigEvent: ((error: Error | null, events: ConfigEvent[]) => void) | null = null;
+  const callbacks = new Map<string, WatchCallback>();
 
   try {
-    await mkdir(join(stashA, ".stash"), { recursive: true });
-    await mkdir(join(stashB, ".stash"), { recursive: true });
-    await writeFile(configPath, JSON.stringify(config, null, 2), "utf8");
+    await mkdir(dirA, { recursive: true });
+    await mkdir(dirB, { recursive: true });
+    await writeConfig(configPath, {
+      github: { token: "token-a" },
+    });
+    await writeStashRecord(stashPath, "stash-a", {
+      path: dirA,
+      connections: [{ provider: "github", config: { id: "user/repo-a" } }],
+    });
 
-    const daemon = new BackgroundDaemon({
+    daemon = new BackgroundDaemon({
       configPath,
-      readGlobalConfig: async () => config,
+      pollMs: 20,
       log: (message) => logs.push(message),
-      subscribe: async (_path, callback) => {
-        onConfigEvent = callback as typeof onConfigEvent;
+      subscribe: async (path, callback) => {
+        callbacks.set(path, callback as WatchCallback);
         return {
-          unsubscribe: async () => {},
-        };
-      },
-      createWatch: async ({ dir, onStatus }) => {
-        watchCallbacks.set(dir, onStatus);
-        return {
-          start: async () => {
-            started.push(dir);
-            await onStatus({
-              kind: "checked",
-              lastSync: new Date("2026-03-11T14:30:00.000Z"),
-              nextCheck: new Date("2026-03-11T14:31:00.000Z"),
-              error: null,
-            });
-          },
-          stop: async () => {
-            stopped.push(dir);
+          unsubscribe: async () => {
+            callbacks.delete(path);
           },
         };
       },
+      createWatch: async ({ stash, onStatus }) => ({
+        start: async () => {
+          started.push(stash.id);
+          await onStatus({
+            kind: "checked",
+            lastSync: new Date("2026-03-11T14:30:00.000Z"),
+            nextCheck: new Date("2026-03-11T14:31:00.000Z"),
+            error: null,
+          });
+        },
+        stop: async () => {
+          stopped.push(stash.id);
+        },
+      }),
     });
 
     await daemon.start();
 
-    const statusPath = join(stashA, ".stash", "status.json");
-    assert.equal(existsSync(statusPath), true);
-    assert.deepEqual(JSON.parse(await readFile(statusPath, "utf8")), {
+    assert.deepEqual(started, ["stash-a"]);
+    assert.deepEqual(JSON.parse(await readFile(join(stashPath, "stash-a", "status.json"), "utf8")), {
       kind: "checked",
       lastSync: "2026-03-11T14:30:00.000Z",
       summary: null,
       error: null,
     });
 
-    const logPath = join(stashA, ".stash", "sync.log");
-    assert.equal((await readFile(logPath, "utf8")).includes("checked"), true);
+    await writeConfig(configPath, {
+      github: { token: "token-b" },
+    });
+    callbacks.get(configPath)?.(null, [{ type: "update", path: configPath }]);
+    await waitFor(
+      () => started.length >= 2 && stopped.length >= 1,
+      "expected stash-a to restart after provider config changed",
+    );
 
-    config = {
-      providers: {},
-      background: {
-        stashes: [stashB],
+    assert.deepEqual(started, ["stash-a", "stash-a"]);
+    assert.deepEqual(stopped, ["stash-a"]);
+
+    await writeStashRecord(stashPath, "stash-b", {
+      path: dirB,
+      connections: [{ provider: "github", config: { id: "user/repo-b" } }],
+    });
+    callbacks.get(stashPath)?.(null, [{ type: "create", path: join(stashPath, "stash-b") }]);
+    await waitFor(
+      () => started.length >= 3,
+      "expected stash-b to start after being added to the registry",
+    );
+
+    assert.deepEqual(started, ["stash-a", "stash-a", "stash-b"]);
+
+    await rm(join(stashPath, "stash-a"), { recursive: true, force: true });
+    callbacks.get(stashPath)?.(null, [{ type: "delete", path: join(stashPath, "stash-a") }]);
+    await waitFor(
+      () => stopped.length >= 2,
+      "expected stash-a to stop after being removed from the registry",
+    );
+
+    assert.deepEqual(stopped, ["stash-a", "stash-a"]);
+    assert.ok(logs.some((message) => message.includes("watching stash-a")));
+    assert.ok(logs.some((message) => message.includes("watching stash-b")));
+    assert.ok(logs.some((message) => message.includes("stopped watching stash-a")));
+
+  } finally {
+    await daemon?.stop();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("daemon: poll-only mode still reconciles new registry entries", async () => {
+  const workspace = await makeTempDir("stash-daemon-poll");
+  const stashPath = join(workspace, "stash");
+  const configPath = join(stashPath, "config.json");
+  const dirA = join(workspace, "dir-a");
+  const dirB = join(workspace, "dir-b");
+  const started: string[] = [];
+  const logs: string[] = [];
+
+  try {
+    await mkdir(dirA, { recursive: true });
+    await mkdir(dirB, { recursive: true });
+    await writeConfig(configPath, {
+      github: { token: "token-a" },
+    });
+    await writeStashRecord(stashPath, "stash-a", {
+      path: dirA,
+      connections: [{ provider: "github", config: { id: "user/repo-a" } }],
+    });
+
+    const daemon = new BackgroundDaemon({
+      configPath,
+      pollMs: 20,
+      log: (message) => logs.push(message),
+      subscribe: async () => {
+        throw new Error("watch unavailable");
       },
-    };
-    await writeFile(configPath, JSON.stringify(config, null, 2), "utf8");
-    onConfigEvent?.(null, [{ type: "update", path: configPath }]);
-    await delay(20);
+      createWatch: async ({ stash, onStatus }) => ({
+        start: async () => {
+          started.push(stash.id);
+          await onStatus({
+            kind: "checked",
+            lastSync: new Date("2026-03-11T14:30:00.000Z"),
+            nextCheck: new Date("2026-03-11T14:31:00.000Z"),
+            error: null,
+          });
+        },
+        stop: async () => {},
+      }),
+    });
 
-    assert.deepEqual(started, [stashA, stashB]);
-    assert.deepEqual(stopped, [stashA]);
+    await daemon.start();
+    assert.deepEqual(started, ["stash-a"]);
 
-    assert.ok(
-      logs.some((m) => m.includes(`watching ${stashA}`)),
-      "should log when starting a watch",
-    );
-    assert.ok(
-      logs.some((m) => m.includes(`stopped watching ${stashA}`)),
-      "should log when stopping a watch",
-    );
-    assert.ok(
-      logs.some((m) => m.includes(`watching ${stashB}`)),
-      "should log new watch after reload",
-    );
+    await writeStashRecord(stashPath, "stash-b", {
+      path: dirB,
+      connections: [{ provider: "github", config: { id: "user/repo-b" } }],
+    });
+    await delay(60);
+
+    assert.deepEqual(started, ["stash-a", "stash-b"]);
+    assert.ok(logs.some((message) => message.includes("watch unavailable")));
 
     await daemon.stop();
   } finally {
@@ -115,39 +210,277 @@ test("daemon: starts registered watches, writes status.json, and hot-reloads con
   }
 });
 
-test("daemon: caps sync.log at 1MB by truncating the oldest lines", async () => {
+test("daemon: queues one immediate follow-up reload when changes arrive mid-reconcile", async () => {
+  const workspace = await makeTempDir("stash-daemon-pending-reload");
+  const stashPath = join(workspace, "stash");
+  const configPath = join(stashPath, "config.json");
+  const dirA = join(workspace, "dir-a");
+  const dirB = join(workspace, "dir-b");
+  const started: string[] = [];
+  const stopped: string[] = [];
+  const callbacks = new Map<string, WatchCallback>();
+  let releaseStop: (() => void) | null = null;
+  let markStopEntered: (() => void) | null = null;
+  const stopEntered = new Promise<void>((resolve) => {
+    markStopEntered = resolve;
+  });
+  const stopGate = new Promise<void>((resolve) => {
+    releaseStop = resolve;
+  });
+
+  try {
+    await mkdir(dirA, { recursive: true });
+    await mkdir(dirB, { recursive: true });
+    await writeConfig(configPath, {
+      github: { token: "token-a" },
+    });
+    await writeStashRecord(stashPath, "stash-a", {
+      path: dirA,
+      connections: [{ provider: "github", config: { id: "user/repo-a" } }],
+    });
+
+    const daemon = new BackgroundDaemon({
+      configPath,
+      pollMs: 10_000,
+      subscribe: async (path, callback) => {
+        callbacks.set(path, callback as WatchCallback);
+        return {
+          unsubscribe: async () => {
+            callbacks.delete(path);
+          },
+        };
+      },
+      createWatch: async ({ stash }) => ({
+        start: async () => {
+          started.push(stash.id);
+        },
+        stop: async () => {
+          stopped.push(stash.id);
+          if (stash.id === "stash-a" && stopped.length === 1) {
+            markStopEntered?.();
+            await stopGate;
+          }
+        },
+      }),
+    });
+
+    await daemon.start();
+    assert.deepEqual(started, ["stash-a"]);
+
+    await writeConfig(configPath, {
+      github: { token: "token-b" },
+    });
+    callbacks.get(configPath)?.(null, [{ type: "update", path: configPath }]);
+    await stopEntered;
+
+    await writeStashRecord(stashPath, "stash-b", {
+      path: dirB,
+      connections: [{ provider: "github", config: { id: "user/repo-b" } }],
+    });
+    callbacks.get(stashPath)?.(null, [{ type: "create", path: join(stashPath, "stash-b") }]);
+
+    releaseStop?.();
+    await delay(80);
+
+    assert.deepEqual(stopped, ["stash-a"]);
+    assert.deepEqual(started, ["stash-a", "stash-a", "stash-b"]);
+
+    await daemon.stop();
+  } finally {
+    releaseStop?.();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("daemon: writes missing status and revalidates tombstone deletion after stop", async () => {
+  const workspace = await makeTempDir("stash-daemon-missing");
+  const stashPath = join(workspace, "stash");
+  const configPath = join(stashPath, "config.json");
+  const liveDir = join(workspace, "live-dir");
+  const missingDir = join(workspace, "missing-dir");
+  let daemon: BackgroundDaemon | null = null;
+  const started: string[] = [];
+  const stopStarted: string[] = [];
+  let releaseStop: (() => void) | null = null;
+  const stopGate = new Promise<void>((resolve) => {
+    releaseStop = resolve;
+  });
+
+  try {
+    await mkdir(liveDir, { recursive: true });
+    await writeConfig(configPath, {
+      github: { token: "token-a" },
+    });
+    await writeStashRecord(stashPath, "missing-stash", {
+      path: missingDir,
+      connections: [{ provider: "github", config: { id: "user/missing" } }],
+    });
+    await writeStashRecord(stashPath, "live-stash", {
+      path: liveDir,
+      connections: [{ provider: "github", config: { id: "user/live" } }],
+    });
+
+    daemon = new BackgroundDaemon({
+      configPath,
+      pollMs: 20,
+      subscribe: async () => ({
+        unsubscribe: async () => {},
+      }),
+      createWatch: async ({ stash, onStatus }) => ({
+        start: async () => {
+          started.push(stash.id);
+          await onStatus({
+            kind: "checked",
+            lastSync: new Date("2026-03-11T14:30:00.000Z"),
+            nextCheck: new Date("2026-03-11T14:31:00.000Z"),
+            error: null,
+          });
+        },
+        stop: async () => {
+          stopStarted.push(stash.id);
+          await stopGate;
+        },
+      }),
+    });
+
+    await daemon.start();
+
+    assert.deepEqual(started, ["live-stash"]);
+    assert.deepEqual(
+      JSON.parse(await readFile(join(stashPath, "missing-stash", "status.json"), "utf8")),
+      {
+        kind: "missing",
+        lastSync: null,
+        summary: null,
+        error: null,
+      },
+    );
+
+    await writeStashRecord(stashPath, "live-stash", {
+      path: liveDir,
+      connections: [],
+    });
+    await delay(40);
+
+    assert.deepEqual(stopStarted, ["live-stash"]);
+
+    await writeStashRecord(stashPath, "live-stash", {
+      path: liveDir,
+      connections: [{ provider: "github", config: { id: "user/live" } }],
+    });
+    releaseStop?.();
+    await delay(80);
+
+    assert.equal(existsSync(join(stashPath, "live-stash")), true);
+    assert.deepEqual(started, ["live-stash", "live-stash"]);
+
+  } finally {
+    releaseStop?.();
+    await daemon?.stop();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("daemon: reload GC removes stale orphan dirs added after startup", async () => {
+  const workspace = await makeTempDir("stash-daemon-reload-orphan");
+  const stashPath = join(workspace, "stash");
+  const configPath = join(stashPath, "config.json");
+  const callbacks = new Map<string, WatchCallback>();
+
+  try {
+    await writeConfig(configPath, {});
+
+    const daemon = new BackgroundDaemon({
+      configPath,
+      pollMs: 10_000,
+      subscribe: async (path, callback) => {
+        callbacks.set(path, callback as WatchCallback);
+        return {
+          unsubscribe: async () => {
+            callbacks.delete(path);
+          },
+        };
+      },
+      createWatch: async () => {
+        throw new Error("no watches expected");
+      },
+    });
+
+    await daemon.start();
+
+    const orphanDir = join(stashPath, "old-orphan");
+    await mkdir(orphanDir, { recursive: true });
+    const oldDate = new Date(Date.now() - 10 * 60_000);
+    await utimes(orphanDir, oldDate, oldDate);
+
+    callbacks.get(stashPath)?.(null, [{ type: "create", path: orphanDir }]);
+    await delay(80);
+
+    assert.equal(existsSync(orphanDir), false);
+
+    await daemon.stop();
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("daemon: startup GC removes old incomplete dirs and keeps fresh incomplete dirs", async () => {
+  const workspace = await makeTempDir("stash-daemon-gc");
+  const stashPath = join(workspace, "stash");
+  const configPath = join(stashPath, "config.json");
+  const oldDir = join(stashPath, "old-orphan");
+  const freshDir = join(stashPath, "fresh-orphan");
+
+  try {
+    await mkdir(oldDir, { recursive: true });
+    await mkdir(freshDir, { recursive: true });
+    const oldDate = new Date(Date.now() - 10 * 60_000);
+    await utimes(oldDir, oldDate, oldDate);
+    await writeConfig(configPath, {});
+
+    const daemon = new BackgroundDaemon({
+      configPath,
+      pollMs: 20,
+      subscribe: async () => ({
+        unsubscribe: async () => {},
+      }),
+      createWatch: async () => {
+        throw new Error("no watches expected");
+      },
+    });
+
+    await daemon.start();
+    await daemon.stop();
+
+    assert.equal(existsSync(oldDir), false);
+    assert.equal(existsSync(freshDir), true);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("daemon: caps sync.log at 1MB under per-stash metadata dirs", async () => {
   const workspace = await makeTempDir("stash-daemon-log");
-  const stashDir = join(workspace, "stash");
-  const configPath = join(workspace, "config.json");
+  const stashPath = join(workspace, "stash");
+  const configPath = join(stashPath, "config.json");
+  const liveDir = join(workspace, "live-dir");
   const oldLine = "x".repeat(200);
   const oldLog = `old-start\n${`${oldLine}\n`.repeat(7_000)}old-tail\n`;
 
   try {
-    await mkdir(join(stashDir, ".stash"), { recursive: true });
-    await writeFile(join(stashDir, ".stash", "sync.log"), oldLog, "utf8");
-    await writeFile(
-      configPath,
-      JSON.stringify(
-        {
-          providers: {},
-          background: {
-            stashes: [stashDir],
-          },
-        } satisfies GlobalConfig,
-        null,
-        2,
-      ),
-      "utf8",
-    );
+    await mkdir(liveDir, { recursive: true });
+    await writeConfig(configPath, {
+      github: { token: "token-a" },
+    });
+    await writeStashRecord(stashPath, "live-stash", {
+      path: liveDir,
+      connections: [{ provider: "github", config: { id: "user/live" } }],
+    });
+    await writeFile(join(stashPath, "live-stash", "sync.log"), oldLog, "utf8");
 
     const daemon = new BackgroundDaemon({
       configPath,
-      readGlobalConfig: async () => ({
-        providers: {},
-        background: {
-          stashes: [stashDir],
-        },
-      }),
+      pollMs: 20,
       subscribe: async () => ({
         unsubscribe: async () => {},
       }),
@@ -168,128 +501,11 @@ test("daemon: caps sync.log at 1MB by truncating the oldest lines", async () => 
     await daemon.start();
     await daemon.stop();
 
-    const logPath = join(stashDir, ".stash", "sync.log");
+    const logPath = join(stashPath, "live-stash", "sync.log");
     const log = await readFile(logPath, "utf8");
     assert.ok(Buffer.byteLength(log, "utf8") <= 1_000_000);
     assert.equal(log.includes("1↑ 2↓"), true);
     assert.equal(log.includes("old-start"), false);
-  } finally {
-    await rm(workspace, { recursive: true, force: true });
-  }
-});
-
-test("daemon: continues in poll-only mode when native watcher throws", async () => {
-  const workspace = await makeTempDir("stash-daemon-no-watcher");
-  const stashDir = join(workspace, "stash");
-  const configPath = join(workspace, "config.json");
-  const logs: string[] = [];
-  let started = false;
-
-  try {
-    await mkdir(join(stashDir, ".stash"), { recursive: true });
-    await writeFile(
-      configPath,
-      JSON.stringify({
-        providers: {},
-        background: { stashes: [stashDir] },
-      } satisfies GlobalConfig),
-      "utf8",
-    );
-
-    const daemon = new BackgroundDaemon({
-      configPath,
-      readGlobalConfig: async () => ({
-        providers: {},
-        background: { stashes: [stashDir] },
-      }),
-      log: (message) => logs.push(message),
-      subscribe: async () => {
-        throw new Error("inotify limit reached");
-      },
-      createWatch: async ({ onStatus }) => ({
-        start: async () => {
-          started = true;
-          await onStatus({
-            kind: "checked",
-            lastSync: new Date("2026-03-11T14:30:00.000Z"),
-            nextCheck: new Date("2026-03-11T14:31:00.000Z"),
-            error: null,
-          });
-        },
-        stop: async () => {},
-      }),
-    });
-
-    await daemon.start();
-
-    assert.equal(started, true, "watch should still start despite watcher failure");
-    assert.ok(
-      logs.some((m) => m.includes("native config watcher unavailable")),
-      "should log watcher fallback",
-    );
-
-    const statusPath = join(stashDir, ".stash", "status.json");
-    assert.equal(existsSync(statusPath), true, "status.json should still be written");
-
-    await daemon.stop();
-  } finally {
-    await rm(workspace, { recursive: true, force: true });
-  }
-});
-
-test("daemon: persists git safety errors to status.json and sync.log", async () => {
-  const workspace = await makeTempDir("stash-daemon-git-error");
-  const stashDir = join(workspace, "stash");
-  const configPath = join(workspace, "config.json");
-  const errorMessage =
-    "git repository detected — run `stash config set allow-git true` to allow syncing";
-
-  try {
-    await mkdir(join(stashDir, ".stash"), { recursive: true });
-    await writeFile(
-      configPath,
-      JSON.stringify({
-        providers: {},
-        background: { stashes: [stashDir] },
-      } satisfies GlobalConfig),
-      "utf8",
-    );
-
-    const daemon = new BackgroundDaemon({
-      configPath,
-      readGlobalConfig: async () => ({
-        providers: {},
-        background: { stashes: [stashDir] },
-      }),
-      subscribe: async () => ({
-        unsubscribe: async () => {},
-      }),
-      createWatch: async ({ onStatus }) => ({
-        start: async () => {
-          await onStatus({
-            kind: "error",
-            error: errorMessage,
-            lastSync: null,
-            nextCheck: new Date("2026-03-11T14:31:00.000Z"),
-          });
-        },
-        stop: async () => {},
-      }),
-    });
-
-    await daemon.start();
-    await daemon.stop();
-
-    const status = JSON.parse(await readFile(join(stashDir, ".stash", "status.json"), "utf8"));
-    assert.deepEqual(status, {
-      kind: "error",
-      lastSync: null,
-      summary: null,
-      error: errorMessage,
-    });
-
-    const log = await readFile(join(stashDir, ".stash", "sync.log"), "utf8");
-    assert.equal(log.includes(errorMessage), true);
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }

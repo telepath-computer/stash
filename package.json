@@ -35,13 +35,15 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@inquirer/prompts": "^8.3.0",
+    "@inquirer/prompts": "^8.4.2",
     "@parcel/watcher": "^2.5.6",
     "@rupertsworld/daemon": "^0.1.1",
     "@rupertsworld/disposable": "^0.1.0",
     "@rupertsworld/emitter": "^0.1.0",
+    "cli-table3": "^0.6.5",
     "commander": "^14.0.3",
-    "diff-match-patch": "^1.0.5"
+    "diff-match-patch": "^1.0.5",
+    "picocolors": "^1.1.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

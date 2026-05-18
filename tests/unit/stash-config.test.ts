@@ -6,24 +6,25 @@ import type { Provider } from "../../src/types.ts";
 import { makeStash } from "../helpers/make-stash.ts";
 
 test("connect writes named provider connection config", async () => {
-  const { stash, dir } = await makeStash();
+  const { stash, metadataDir } = await makeStash();
   await stash.connect({ name: "origin", provider: "github", repo: "user/repo" });
 
-  const config = JSON.parse(await readFile(join(dir, ".stash", "config.json"), "utf8"));
-  assert.deepEqual(config, {
-    connections: {
-      origin: { provider: "github", repo: "user/repo" },
+  const record = JSON.parse(await readFile(join(metadataDir, "stash.json"), "utf8"));
+  assert.deepEqual(record.connections, [
+    {
+      provider: "github",
+      config: { name: "origin", repo: "user/repo" },
     },
-  });
+  ]);
 });
 
 test("disconnect removes named connection config", async () => {
-  const { stash, dir } = await makeStash();
+  const { stash, metadataDir } = await makeStash();
   await stash.connect({ name: "origin", provider: "github", repo: "user/repo" });
   await stash.disconnect("origin");
 
-  const config = JSON.parse(await readFile(join(dir, ".stash", "config.json"), "utf8"));
-  assert.deepEqual(config, { connections: {} });
+  const record = JSON.parse(await readFile(join(metadataDir, "stash.json"), "utf8"));
+  assert.deepEqual(record.connections, []);
 });
 
 test("connections getter reflects latest local state", async () => {
